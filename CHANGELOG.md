@@ -77,6 +77,10 @@ published release. See [current status and validation](docs/current-status.md).
   their confidence, virtual classification requires explicit sysfs evidence,
   and Ray discovery validates markers before dispatch, cancels failed probes,
   and has deterministic tests plus a same-host two-node smoke check.
+- GPU to NUMA and nearest-NIC mapping read from host sysfs on each Ray node,
+  with PCI ancestry, per-interface proximity and its evidence, explicit unknown
+  states with diagnostics, stable ordering and serialization, and a runnable
+  example; proximity is structural and is not a bandwidth claim.
 
 - The Dynamo configuration is derived from the pinned contract through
   `DynamoConfig.from_contract()`, with declared adapter and caller ownership
@@ -99,10 +103,13 @@ published release. See [current status and validation](docs/current-status.md).
   placement scoring.
 - NVML may not expose a topology property on every driver and GPU; unavailable
   relationship fields are reported as `None`.
-- GPU-to-NIC affinity and inter-node bandwidth or latency are not discovered.
-  The NIC inventory reports advertised link speed from Linux sysfs only; that
+- The NIC inventory reports advertised link speed from Linux sysfs only; that
   is not measured throughput, and virtualized hosts often leave PCI, NUMA, or
   speed unavailable.
+- Host locality reads NUMA and interface data from Linux sysfs only, and keeps
+  unreadable or absent values as an explicit unknown. It observes proximity; it
+  does not bind a GPU to a NIC or feed placement scoring.
+- A typed affinity graph and inter-node bandwidth or latency are not discovered.
 
 ### Planned
 
