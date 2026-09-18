@@ -75,9 +75,10 @@ Normalized JCT is the stated evaluation metric. The exact normalization baseline
 ## Repository Status
 
 This repository includes an initial Python placement policy, automatic
-intra-node GPU topology discovery, a Ray execution adapter, and a KAI Scheduler
-lifecycle adapter. It is an experimental foundation: real GPU benchmarks,
-workload traces, and inter-node topology discovery are not yet included. The
+intra-node GPU topology discovery, a network interface inventory, a Ray
+execution adapter, and a KAI Scheduler lifecycle adapter. It is an experimental
+foundation: real GPU benchmarks, workload traces, GPU-to-NIC affinity, and
+measured inter-node links are not yet included. The
 [Dynamo lifecycle adapter](docs/dynamo-lifecycle.md) has CPU/fake-engine coverage;
 real Dynamo/CUDA inference remains unverified.
 
@@ -99,6 +100,7 @@ evidence required for completion. Track live assignments and progress in
 - **[Placement policy](topology_scheduler/policy.py)**: selects nodes using per-workload compute estimates, GPU memory/capacity and inter-node communication costs.
 - **[Ray adapter](topology_scheduler/ray_backend.py)**: atomically reserves bundles on those nodes, launches one task per GPU and releases resources on completion or failure.
 - **[V1.2 GPU inventory](topology_scheduler/inventory.py)**: probes every live GPU node and reads GPU identity plus pairwise PCI/NUMA ancestry and direct NVLink counts through Ray's bundled NVIDIA NVML support.
+- **[NIC inventory](topology_scheduler/nic_inventory.py)**: reads each node's interfaces, their PCI function, NUMA node, driver, state, advertised speed, and RDMA devices, with per-field confidence; see the **[guide](docs/nic-inventory.md)** and run `python -m examples.nic_inventory`.
 - **[V1 Dynamo contract](docs/dynamo-v1-contract.md)**: pins the Ray, Dynamo, vLLM, Python, CUDA, driver, Linux, model, ownership, readiness, and shutdown contract for independent single-GPU replicas.
 
 ```bash
