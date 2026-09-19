@@ -8,8 +8,9 @@ The graph API and CPU example are implemented. Automatic NIC discovery
 ([#14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14))
 and GPU/NUMA/NIC derivation
 ([#15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15))
-remain separate, unfinished collectors. Their outputs can populate this model;
-this change adds neither collector nor claims real-cluster validation.
+remain separate collector PRs. `from_observations()` adapts their exported
+snapshots without importing or changing their implementations. This PR needs
+neither collector installed for graph tests and claims no real-cluster validation.
 
 ## API and stable identities
 
@@ -124,6 +125,67 @@ new graph round trips preserve the converted representation, not legacy array
 order or format.
 
 ## Example, validation, and enforcement boundary
+
+### Adapting collector snapshots
+
+```python
+graph = TopologyGraph.from_observations(
+    gpu_inventory,
+    nic_inventory=nic_inventory,  # optional NodeNICInventory.as_dict() or object
+    host_topology=host_topology,  # optional HostTopology.as_dict() or object
+)
+```
+
+The GPU argument is one `RayNodeInventory` or its JSON dictionary. Optional
+snapshots use the public dictionary shapes from [NIC PR #33](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/33)
+and [locality PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29).
+The adapter only reads these records; it never starts Ray or discovers devices.
+After the collectors land, callers obtain their results using their existing
+discovery functions and join records by `node_id` before passing one node here.
+Collectors should retain these exported fields, or coordinate a schema update:
+
+| Input | Fields used to construct relationships |
+| --- | --- |
+| GPU inventory | `node_id`, `devices[].uuid`, `devices[].pci_bus_id`, legacy `connections` |
+| NIC inventory | `node_id`, `interfaces[].name`, `pci_address` and `numa_node` Reading objects with `value`/`confidence` |
+| Host topology | `node_id`, `nics[].name/pci_address/numa_node`, `gpus[].uuid/pci_address/numa_node/nics` |
+| GPU's NIC proximity | `nic_name`, `proximity`, `shared_pci_ancestor`, optional `reason` |
+
+NICs join by interface name within the same Ray node and get keys
+`interface:<name>`. Two interfaces on the same PCI function remain distinct;
+renaming an interface changes its graph identity. GPU UUIDs remain the keys,
+and PCI comparison handles NVML's eight-digit versus sysfs's four-digit domain.
+Mismatched node IDs, conflicting known PCI/NUMA identities, duplicate source
+records, and dangling GPU/NIC references raise errors rather than silently
+combining inconsistent snapshots. Matching identities do not prove samples were
+taken simultaneously; callers own freshness and collection coordination.
+
+Original NIC readings (including confidence, source, RDMA data, unknown fields,
+and advertised speeds) remain in vertex attributes. Host metadata and
+diagnostics remain on the node; GPU/NIC locality records remain on devices,
+and per-pair proximity records remain in edge evidence. Record arrays are
+indexed by their stable identities; evidence arrays such as PCI paths retain
+their meaning and order. Unknown NUMA values stay in attributes without a
+fabricated NUMA vertex. No NUMA membership is inferred from an affinity label.
+Only the collector's proximity label determines affinity; the adapter never
+recomputes it from speed or ancestry. Missing pairs get explicit unknown edges,
+and unsupported pairs stay unsupported. An observed shared ancestor creates
+a separate `pcie_ancestry` edge with value `shared-ancestor` and the raw ancestor
+in evidence. Edge confidence stays `unknown` because these snapshots do not
+provide an edge-confidence assessment; per-field confidence remains intact.
+
+To process exported per-node JSON files without installing either collector:
+
+```bash
+python -m examples.topology_graph --gpu-inventory gpu.json --nic-inventory nics.json --host-topology host.json
+```
+
+Supply each collector's single-node dictionary, not an example command's output
+wrapper or a whole-cluster array. The file mode labels its input source and
+makes no claim that supplied files came from physical hardware. Omitting NIC
+or locality input preserves the available information; GPU-only behavior is
+unchanged. The adapter tests cover these source schemas, conflicts, unknowns,
+equal-distance ties, and canonical round trips.
 
 From the repository root, run:
 

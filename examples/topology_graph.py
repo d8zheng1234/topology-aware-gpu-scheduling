@@ -1,6 +1,8 @@
-"""Print a synthetic typed topology graph and categorical affinity queries."""
+"""Print a synthetic graph, or adapt one node's exported collector snapshots."""
 
+import argparse
 import json
+from pathlib import Path
 
 from topology_scheduler import (
     GPUConnection, GPUDevice, RayNodeInventory, TopologyGraph,
@@ -49,18 +51,32 @@ def example_graph():
 
 
 def main():
-    graph = example_graph()
-    gpu = next(vertex for vertex in graph.vertices if vertex.kind == "gpu")
-    nic = next(vertex for vertex in graph.vertices if vertex.kind == "nic")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--gpu-inventory", type=Path, help="one GPU inventory JSON object")
+    parser.add_argument("--nic-inventory", type=Path, help="one NodeNICInventory.as_dict() JSON object")
+    parser.add_argument("--host-topology", type=Path, help="one HostTopology.as_dict() JSON object")
+    args = parser.parse_args()
+    if (args.nic_inventory or args.host_topology) and not args.gpu_inventory:
+        parser.error("--nic-inventory and --host-topology require --gpu-inventory")
+    def read(path):
+        return json.loads(path.read_text(encoding="utf-8")) if path else None
+    graph = (TopologyGraph.from_observations(
+        read(args.gpu_inventory), nic_inventory=read(args.nic_inventory),
+        host_topology=read(args.host_topology),
+    ) if args.gpu_inventory else example_graph())
+    gpu = next((vertex for vertex in graph.vertices if vertex.kind == "gpu"), None)
+    nic = next((vertex for vertex in graph.vertices if vertex.kind == "nic"), None)
     print(json.dumps({
-        "synthetic_inputs": True,
+        **({"synthetic_inputs": True} if not args.gpu_inventory else {}),
+        "input_source": "snapshot_files" if args.gpu_inventory else "synthetic_fixture",
+        "benchmark_evidence": False,
         "graph": graph.as_dict(),
         "queries": {
-            "gpu": gpu.id,
-            "nics_near_gpu": [vertex.id for vertex in graph.nics_near_gpu(gpu.id)],
-            "nic": nic.id,
-            "gpus_near_nic": [vertex.id for vertex in graph.gpus_near_nic(nic.id)],
-            "intra_node_relationship_count": len(graph.relationships_within_node(gpu.node_id)),
+            "gpu": gpu.id if gpu else None,
+            "nics_near_gpu": [vertex.id for vertex in graph.nics_near_gpu(gpu.id)] if gpu else [],
+            "nic": nic.id if nic else None,
+            "gpus_near_nic": [vertex.id for vertex in graph.gpus_near_nic(nic.id)] if nic else [],
+            "intra_node_relationship_count": len(graph.relationships),
         },
     }, indent=2, sort_keys=True))
 

@@ -13,7 +13,8 @@ published release. See [current status and validation](docs/current-status.md).
 
 - A typed GPU/NIC/NUMA/node graph with evidence-bearing relationships,
   deterministic serialization, legacy GPU inventory loading, affinity queries,
-  and a synthetic CPU example. Automatic NIC/affinity discovery and backend
+  collector-snapshot adapters with identity/conflict validation, and a CPU
+  example that also reads exported snapshots. Automatic NIC/affinity discovery and backend
   device binding remain separate work
   ([PR #28](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/28)).
 - A persistent Ray-managed Dynamo replica adapter with atomic reservations,

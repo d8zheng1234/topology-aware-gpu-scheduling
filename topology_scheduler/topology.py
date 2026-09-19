@@ -269,6 +269,18 @@ class TopologyGraph:
         return cls.from_legacy(asdict(inventory))
 
     @classmethod
+    def from_observations(cls, gpu_inventory, *, nic_inventory=None, host_topology=None):
+        """Join one node's GPU, NIC, and locality snapshots without running probes.
+
+        GPU input is a RayNodeInventory or legacy dictionary. Optional inputs
+        accept the dictionaries exported by NodeNICInventory/HostTopology, or
+        objects with as_dict(). No unmerged collector modules are imported.
+        """
+        from .topology_observations import graph_from_observations
+
+        return graph_from_observations(gpu_inventory, nic_inventory, host_topology)
+
+    @classmethod
     def from_legacy(cls, data):
         """Retain every legacy property as attributes or per-relationship evidence."""
         records = data if isinstance(data, list) else [data]
