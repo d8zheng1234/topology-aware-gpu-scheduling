@@ -1,6 +1,7 @@
 """Experimental placement policy; importing it does not require Ray."""
 
 from .policy import Node, Plan, PolicyName, Workload, choose_placement
+from .dynamo_backend import DynamoConfig, DynamoService, DynamoLifecycleError, DynamoCleanupError
 from .comparison import (
     ExecutionRecord, PlanningRecord, RecordedExecutionError, plan_with_record,
     run_with_record,
@@ -22,6 +23,7 @@ from .kai_backend import (
 __all__ = [
     "AFFINITY_ORDER", "RELATIONSHIP_TYPES", "RelationshipType", "TopologyGraph",
     "TopologyRelationship", "TopologyVertex",
+    "DynamoConfig", "DynamoService", "DynamoLifecycleError", "DynamoCleanupError",
     "ClusterNode", "ExecutionRecord", "GPUConnection", "GPUDevice", "KAIStatus",
     "KAIWorkload", "KubernetesKAIClient", "PodState",
     "Node", "Plan",
