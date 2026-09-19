@@ -83,7 +83,8 @@ class InterfaceKindTests(unittest.TestCase):
             net("lo", {"address": "00:00:00:00:00:00", "operstate": "unknown",
                        "mtu": "65536", "type": "772", "speed": INVALID}),
             net("br0", {"address": "02:42:00:00:00:01", "operstate": "down",
-                        "mtu": "1500", "type": "1", "speed": INVALID}))
+                        "mtu": "1500", "type": "1", "speed": INVALID}),
+            {"sys/devices/virtual/net/br0": {}})
         kinds = {item.name: item.kind for item in inventory.interfaces}
         self.assertEqual(kinds, {"lo": LOOPBACK, "br0": VIRTUAL})
         self.assertEqual(inventory.physical, ())
@@ -98,6 +99,27 @@ class InterfaceKindTests(unittest.TestCase):
 
 
 class ConfidenceTests(unittest.TestCase):
+    def test_uevent_error_keeps_confidence_and_does_not_imply_virtual(self):
+        for value, expected in ((DENIED, UNREADABLE), (INVALID, UNSUPPORTED)):
+            tree = net("eth0", ETHERNET)
+            tree["sys/class/net/eth0/device"]["uevent"] = value
+            with self.subTest(confidence=expected):
+                (interface,) = collect(tree).interfaces
+                self.assertEqual(interface.kind, "unknown")
+                for reading in (interface.pci_address, interface.driver):
+                    self.assertIsNone(reading.value)
+                    self.assertEqual(reading.confidence, expected)
+                    self.assertEqual(reading.source, "/sys/class/net/eth0/device/uevent")
+                if expected == UNREADABLE:
+                    self.assertEqual(len(interface.problems), 2)
+
+    def test_missing_pci_on_non_pci_device_does_not_imply_virtual(self):
+        (interface,) = collect(net("usb0", ETHERNET,
+                                  uevent="DRIVER=cdc_ether\n")).interfaces
+        self.assertEqual(interface.kind, "unknown")
+        self.assertEqual(interface.driver.value, "cdc_ether")
+        self.assertEqual(interface.pci_address.confidence, UNAVAILABLE)
+
     def test_unsupported_speed_is_not_a_measured_zero(self):
         (interface,) = collect(net("br0", dict(ETHERNET, speed=INVALID))).interfaces
         self.assertIsNone(interface.speed_mbps.value)

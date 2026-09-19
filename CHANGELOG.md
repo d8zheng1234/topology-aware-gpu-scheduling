@@ -68,7 +68,10 @@ published release. See [current status and validation](docs/current-status.md).
   unavailable, unsupported, or unreadable value is never mistaken for zero, a
   runnable example, and stable serialization beside the GPU inventory
   ([PR #33](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/33));
-  advertised speed is not measured throughput.
+  advertised speed is not measured throughput. PCI/driver read failures retain
+  their confidence, virtual classification requires explicit sysfs evidence,
+  and Ray discovery validates markers before dispatch, cancels failed probes,
+  and has deterministic tests plus a same-host two-node smoke check.
 
 - The Dynamo configuration is derived from the pinned contract through
   `DynamoConfig.from_contract()`, with declared adapter and caller ownership

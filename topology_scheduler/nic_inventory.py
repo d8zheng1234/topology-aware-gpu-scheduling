@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .inventory import _node_marker
+from .policy import positive
 
 # How much one reading is worth.
 REPORTED = "reported"          # The kernel gave a usable value.
@@ -178,28 +179,35 @@ def _positive_int(text: str) -> int | None:
     return value if value >= 0 else None
 
 
-def _uevent(sysfs: SysfsReader, parts: Sequence[str]) -> dict[str, str]:
+def _uevent(sysfs: SysfsReader, parts: Sequence[str]) -> dict[str, Reading]:
     """Parse a sysfs uevent file, which names the PCI slot and the driver.
 
     Reading ``device/uevent`` avoids following the ``device`` symlink, so the
     same code works against a fixture that cannot contain symlinks.
     """
-    text, _ = sysfs.read(*parts, "device", "uevent")
+    text, confidence = sysfs.read(*parts, "device", "uevent")
+    source = _path(*parts, "device", "uevent")
     values = {}
     for line in (text or "").splitlines():
         key, separator, value = line.partition("=")
         if separator and value:
             values[key.strip()] = value.strip()
-    return values
+    return {
+        key: Reading(values.get(key), source,
+                     REPORTED if key in values else
+                     confidence if confidence != REPORTED else UNAVAILABLE)
+        for key in ("PCI_SLOT_NAME", "DRIVER")
+    }
 
 
-def _classify(kind_type: Reading, pci: Reading, name: str) -> str:
+def _classify(kind_type: Reading, pci: Reading, name: str,
+              virtual_names: Sequence[str]) -> str:
     """Sort an interface into physical, virtual, loopback, or unknown."""
     if kind_type.value == ARPHRD_LOOPBACK or name == "lo":
         return LOOPBACK
     if pci.known:
         return PHYSICAL
-    if kind_type.known:
+    if name in virtual_names:
         return VIRTUAL
     return UNKNOWN
 
@@ -210,7 +218,7 @@ def _rdma_devices(sysfs: SysfsReader) -> dict[str, list[RDMADevice]]:
     devices: dict[str, list[RDMADevice]] = {}
     for name in sysfs.directories(*base):
         parts = base + (name,)
-        pci = _uevent(sysfs, parts).get("PCI_SLOT_NAME")
+        pci = _uevent(sysfs, parts)["PCI_SLOT_NAME"].value
         node_type, _ = sysfs.read(*parts, "node_type")
         states, link_layer = [], None
         for port in sysfs.directories(*parts, "ports"):
@@ -240,19 +248,18 @@ def collect_nic_inventory(
     rdma = _rdma_devices(sysfs)
     interfaces, problems = [], []
     names = sysfs.directories(*base)
+    virtual_names = sysfs.directories("sys", "devices", "virtual", "net")
     if not names:
         problems.append(f"no interfaces were found under {_path(*base)}")
     for name in names:
         parts = base + (name,)
         uevent = _uevent(sysfs, parts)
-        pci = Reading(uevent.get("PCI_SLOT_NAME"), _path(*parts, "device", "uevent"),
-                      REPORTED if uevent.get("PCI_SLOT_NAME") else UNAVAILABLE)
-        driver = Reading(uevent.get("DRIVER"), _path(*parts, "device", "uevent"),
-                         REPORTED if uevent.get("DRIVER") else UNAVAILABLE)
+        pci = uevent["PCI_SLOT_NAME"]
+        driver = uevent["DRIVER"]
         kind_type = _reading(sysfs, parts + ("type",), convert=int)
         interface = NetworkInterface(
             name=name,
-            kind=_classify(kind_type, pci, name),
+            kind=_classify(kind_type, pci, name, virtual_names),
             mac=_reading(sysfs, parts + ("address",)),
             pci_address=pci,
             numa_node=_reading(sysfs, parts + ("device", "numa_node"),
@@ -265,7 +272,8 @@ def collect_nic_inventory(
         )
         unreadable = tuple(
             f"{field}: {getattr(interface, field).source} could not be read"
-            for field in ("mac", "numa_node", "operstate", "mtu", "speed_mbps")
+            for field in ("mac", "pci_address", "driver", "numa_node",
+                          "operstate", "mtu", "speed_mbps")
             if getattr(interface, field).confidence == UNREADABLE
         )
         interfaces.append(replace(interface, problems=unreadable))
@@ -293,13 +301,11 @@ def discover_nic_inventory(*, timeout: float = 30) -> tuple[NodeNICInventory, ..
     import ray
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    positive(timeout, "timeout")
     if not ray.is_initialized():
         raise RuntimeError("Call ray.init() before NIC discovery")
 
-    probe = ray.remote(num_cpus=0)(_probe_node_nics)
-    pending, metadata = [], []
+    metadata = []
     for node in ray.nodes():
         resources = node["Resources"]
         if not node["Alive"] or not any(
@@ -308,15 +314,30 @@ def discover_nic_inventory(*, timeout: float = 30) -> tuple[NodeNICInventory, ..
             continue
         node_id = node["NodeID"]
         _, name = _node_marker(resources, node_id)
-        pending.append(probe.options(
-            scheduling_strategy=NodeAffinitySchedulingStrategy(
-                node_id=node_id, soft=False)).remote())
         metadata.append((node_id, name))
-    if not pending:
+    if not metadata:
         raise ValueError("No live Ray node advertises a topology_node:<name> resource")
+    if len({name for _, name in metadata}) != len(metadata):
+        raise ValueError("Live Ray nodes must have unique topology_node names")
 
+    metadata.sort(key=lambda item: item[1])
+    probe = ray.remote(num_cpus=0, max_retries=0)(_probe_node_nics)
+    pending = []
+    try:
+        for node_id, name in metadata:
+            pending.append(probe.options(
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=node_id, soft=False)).remote())
+        results = ray.get(pending, timeout=timeout)
+    except BaseException:
+        for ref in pending:
+            try:
+                ray.cancel(ref, force=True)
+            except Exception:
+                pass  # Preserve the original failure if Ray itself is unavailable.
+        raise
     inventories = []
-    for (expected_id, name), result in zip(metadata, ray.get(pending, timeout=timeout)):
+    for (expected_id, name), result in zip(metadata, results):
         if result["node_id"] != expected_id:
             raise RuntimeError(f"NIC probe for {name} ran on the wrong Ray node")
         inventory = result["inventory"]

@@ -13,8 +13,9 @@ cluster rather than from a person.
 This is an inventory, never a measurement. Advertised link speed is what the
 driver says the link negotiated; comparing it with real throughput is
 [issue #17](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/17),
-and using it for placement scoring is
+and representing it in a typed topology graph is
 [issue #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16).
+Neither inventory nor graph relationships enforce placement or select a NIC.
 
 ```mermaid
 flowchart LR
@@ -36,18 +37,19 @@ flowchart LR
 | `operstate` | `/sys/class/net/<name>/operstate` |
 | `mtu` | `/sys/class/net/<name>/mtu` |
 | `speed_mbps` | `/sys/class/net/<name>/speed` |
-| `kind` | `/sys/class/net/<name>/type` plus whether a PCI function exists |
+| `kind` | `/sys/class/net/<name>/type`, PCI identity, and membership in `/sys/devices/virtual/net` |
 | `pci_address`, `driver` | `PCI_SLOT_NAME` and `DRIVER` in `<name>/device/uevent` |
 | `numa_node` | `<name>/device/numa_node` |
 | `rdma` | `/sys/class/infiniband/*`, matched to the interface by PCI address |
 
-Reading `device/uevent` rather than following the `device` symlink keeps one
-code path for a real host and for a fixture, since a fixture cannot contain
-symlinks.
+Reading `device/uevent` lets fixtures supply the same attributes without
+creating symlinks; on a real host the filesystem resolves the sysfs links.
+See the [Linux sysfs documentation](https://www.kernel.org/doc/html/v6.9/filesystems/sysfs.html)
+for the device tree and class links.
 
 ## Unknown is not zero
 
-Every field is a `Reading` with a `value`, the `source` file it came from, and
+Interface scalar attributes are `Reading` values with the `source` file and
 a `confidence`:
 
 | Confidence | Meaning |
@@ -68,11 +70,18 @@ silently a zero. A field that could not be read also appears in the interface's
 | --- | --- |
 | `loopback` | ARPHRD type 772, or the name `lo` |
 | `physical` | A PCI function was found in `device/uevent` |
-| `virtual` | The kernel described the interface but it has no PCI function |
-| `unknown` | Neither the type nor a PCI function could be read |
+| `virtual` | No PCI identity was found, and the name appears under `/sys/devices/virtual/net` |
+| `unknown` | None of the above has enough evidence; missing PCI alone does not imply virtual |
 
 `up` is derived from `operstate`, so a down physical NIC is still inventoried
 as physical.
+
+Unreadable `device/uevent` preserves `unreadable` confidence on both PCI and
+driver fields and adds diagnostics. An inaccessible PCI device or a non-PCI
+interface such as USB remains `unknown` unless there is explicit evidence for
+another kind. Here `physical` means PCI-backed as exposed by the host; a virtual
+machine may expose a PCI-backed virtual adapter, so it does not prove bare-metal
+hardware.
 
 ## RDMA and InfiniBand
 
@@ -107,6 +116,17 @@ for inventory in discover_nic_inventory():
 up with `discover_ray_gpu_inventory()` for the same machine. Unlike GPU
 discovery it does not require the node to have a GPU.
 
+All markers are validated before dispatch, and names must be unique across
+live marked nodes. Probes have retries disabled. A submission error, task
+failure, timeout, or interrupt cancels tasks already submitted and propagates
+the error; callers can retry explicitly. Inaccessible sysfs fields are instead
+returned as partial inventory with the affected values' confidence preserved.
+
+On Linux with `.[ray]` installed, run `python -m examples.ray_nic_smoke` for two
+local Ray nodes with no GPUs. It verifies node affinity, retained node identity,
+and repeat serialization while reading real host sysfs. This runs in Linux CI;
+both nodes share one host and it is not physical multi-node or bandwidth evidence.
+
 Ordering is stable: interfaces sort by name, and repeated discovery on an
 unchanged host serializes identically.
 
@@ -121,4 +141,4 @@ unchanged host serializes identically.
   resolving which physical members carry them.
 - No physical InfiniBand or multi-NIC host has been inventoried yet. The rules
   are covered by fixtures, and CI additionally runs the collector against a
-  real Linux host that has only loopback and a virtual NIC.
+  real Linux host and tests the Ray discovery path using two nodes on that host.

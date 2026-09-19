@@ -12,6 +12,8 @@ from topology_scheduler import SysfsReader, collect_nic_inventory
 # A synthetic host: a Mellanox port with RDMA, an onboard NIC whose driver
 # reports no speed, a bridge, and loopback.
 DEMO_TREE = {
+    "sys/devices/virtual/net/br0": {},
+    "sys/devices/virtual/net/lo": {},
     "sys/class/net/eth0": {"address": "ac:1f:6b:00:00:01", "operstate": "up",
                            "mtu": "9000", "speed": "100000", "type": "1"},
     "sys/class/net/eth0/device": {"uevent": "DRIVER=mlx5_core\n"
