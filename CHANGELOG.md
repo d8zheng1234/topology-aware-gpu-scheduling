@@ -82,6 +82,13 @@ published release. See [current status and validation](docs/current-status.md).
   `DynamoConfig.from_contract()`, with declared adapter and caller ownership
   lists, so the contract stays the single source of truth instead of being
   copied into field defaults.
+- Device identity binding: one `topology_gpu:<uuid>` custom resource per
+  physical GPU, resolution of the device a rank actually received to its UUID,
+  and a verify mode that refuses a rank whose device is not the planned one
+  before its workload runs. Records the requested and assigned identity, the
+  index and PCI address they resolved through, and the observed
+  `CUDA_DEVICE_ORDER`. This is verification, not selection: Ray still chooses
+  the device, and nothing has run on physical GPUs.
 
 ### Changed
 
@@ -94,9 +101,11 @@ published release. See [current status and validation](docs/current-status.md).
 
 ### Known limitations
 
-- The Ray adapter cannot yet bind a worker to a selected physical GPU UUID, so
-  discovered device-level relationships are observational and are not used in
-  placement scoring.
+- The Ray adapter can verify which physical GPU a rank received and refuse a
+  mismatch, but it cannot ask Ray for a particular device. Discovered
+  device-level relationships therefore remain observational and are still not
+  used in placement scoring. Device identity is only trustworthy when every
+  worker sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, which Ray does not do.
 - NVML may not expose a topology property on every driver and GPU; unavailable
   relationship fields are reported as `None`.
 - GPU-to-NIC affinity and inter-node bandwidth or latency are not discovered.
