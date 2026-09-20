@@ -87,8 +87,10 @@ published release. See [current status and validation](docs/current-status.md).
   and a verify mode that refuses a rank whose device is not the planned one
   before its workload runs. Records the requested and assigned identity, the
   index and PCI address they resolved through, and the observed
-  `CUDA_DEVICE_ORDER`. This is verification, not selection: Ray still chooses
-  the device, and nothing has run on physical GPUs.
+  `CUDA_DEVICE_ORDER`
+  ([PR #36](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/36));
+  this is verification, not selection: Ray still chooses the device, and
+  nothing has run on physical GPUs.
 
 ### Changed
 
