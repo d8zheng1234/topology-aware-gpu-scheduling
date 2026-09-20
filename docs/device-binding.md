@@ -111,13 +111,53 @@ the one-GPU-per-node case with constructed devices. The smoke runs the real
 reservation and task path on one local Ray node with **simulated** logical GPUs
 and stand-in device identities, so it exercises everything except NVML itself.
 
+## Physical evidence
+
+[`device_binding_gpu_check.py`](../examples/device_binding_gpu_check.py) covers
+the step the smoke cannot. It is opt-in and never runs in CI; without `--run`
+or without a GPU it prints why it skipped and exits 0.
+
+```bash
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+python -m examples.device_binding_gpu_check --run
+```
+
+Each worker asks the **CUDA driver** which device it would compute on, through
+`ctypes`, so no CUDA toolkit or PyTorch has to be installed. The check then
+compares that answer with the UUID this layer resolved. That comparison is the
+point: not that two NVML reads agree with each other, but that the device the
+process actually holds is the planned one.
+
+Recorded run on 2026-09-20 — one NVIDIA GeForce RTX 5070 Laptop GPU, driver
+610.74, Ray 2.55.0, Python 3.12.10, Windows 11:
+
+| Check | Result |
+| --- | --- |
+| Rank asks for the device the plan names | Resolved to `GPU-aef71c8d-…` through index 0 at `00000000:02:00.0`, ordering `PCI_BUS_ID`, matched |
+| CUDA context the worker opened | The driver named the same UUID this layer resolved |
+| Rank asks for a device the host does not have | Refused, and **no worker body ran** |
+| Same real device, ordering not `PCI_BUS_ID` | Refused, and **no worker body ran** |
+
+The refusals are counted, not assumed: a counter actor records every worker
+body that executes, and it stayed at zero in both.
+
+What that run does **not** establish:
+
+- **One GPU.** The degenerate case cannot show two ranks on one node each
+  receiving their own planned device. Only the simulated smoke covers that, and
+  only with stand-in identities.
+- **No numerical work.** A CUDA context is created and destroyed. It names the
+  device; it does not show a kernel running on it, and it is not a benchmark.
+- **Windows on a consumer laptop GPU**, not the Linux amd64 hosts this project
+  targets elsewhere.
+
 ## Limits
 
 - This is verification, not selection. Ray still decides which device a task
   receives; the adapter only refuses a result it cannot vouch for.
-- Nothing here has run against physical GPUs. Confirming that a resolved UUID
-  is the device a process actually computes on needs hardware, and that
-  evidence does not exist yet.
+- The physical evidence above covers a single GPU on one Windows host. Multiple
+  devices per node, Linux hosts, and any numerical workload running on the
+  verified device are still unproven.
 - Placement scoring still does not consume device-level relationships. Until
   selection exists, an NVLink pair can be observed and verified after the fact,
   not requested, so scoring on it would still overstate the guarantee.
