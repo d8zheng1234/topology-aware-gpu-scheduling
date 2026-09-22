@@ -13,7 +13,7 @@ fixture as easily as against a host.
 """
 
 import errno
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -55,13 +55,21 @@ class RDMADevice:
     """An RDMA device and the PCI function it shares with a network interface."""
 
     name: str
-    pci_address: str | None
-    node_type: str | None
-    link_layer: str | None
-    port_states: tuple[str, ...] = ()
+    pci_address: Reading
+    node_type: Reading
+    link_layer: Reading
+    port_states: tuple[Reading, ...] = ()
+    problems: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
-        return dict(asdict(self), port_states=list(self.port_states))
+        return {
+            "name": self.name,
+            "pci_address": self.pci_address.as_dict(),
+            "node_type": self.node_type.as_dict(),
+            "link_layer": self.link_layer.as_dict(),
+            "port_states": [state.as_dict() for state in self.port_states],
+            "problems": list(self.problems),
+        }
 
 
 @dataclass(frozen=True)
@@ -104,6 +112,7 @@ class NodeNICInventory:
     node_name: str
     interfaces: tuple[NetworkInterface, ...]
     problems: tuple[str, ...] = ()
+    unattached_rdma: tuple[RDMADevice, ...] = ()
 
     @property
     def physical(self) -> tuple[NetworkInterface, ...]:
@@ -113,6 +122,7 @@ class NodeNICInventory:
         return {
             "node_id": self.node_id, "node_name": self.node_name,
             "interfaces": [item.as_dict() for item in self.interfaces],
+            "unattached_rdma": [device.as_dict() for device in self.unattached_rdma],
             "problems": list(self.problems), "units": dict(UNITS),
         }
 
@@ -212,25 +222,34 @@ def _classify(kind_type: Reading, pci: Reading, name: str,
     return UNKNOWN
 
 
-def _rdma_devices(sysfs: SysfsReader) -> dict[str, list[RDMADevice]]:
-    """Map each PCI address to the RDMA devices that sit on it."""
+def _rdma_devices(sysfs: SysfsReader) -> tuple[RDMADevice, ...]:
+    """Read every RDMA device, including devices that cannot be PCI-matched."""
     base = ("sys", "class", "infiniband")
-    devices: dict[str, list[RDMADevice]] = {}
+    devices = []
     for name in sysfs.directories(*base):
         parts = base + (name,)
-        pci = _uevent(sysfs, parts)["PCI_SLOT_NAME"].value
-        node_type, _ = sysfs.read(*parts, "node_type")
+        pci = _uevent(sysfs, parts)["PCI_SLOT_NAME"]
+        node_type = _reading(sysfs, parts + ("node_type",))
         states, link_layer = [], None
         for port in sysfs.directories(*parts, "ports"):
-            state, _ = sysfs.read(*parts, "ports", port, "state")
-            if state:
-                states.append(f"{port}:{state}")
+            state = _reading(sysfs, parts + ("ports", port, "state"))
+            states.append(Reading(
+                f"{port}:{state.value}" if state.value is not None else None,
+                state.source, state.confidence))
             if link_layer is None:
-                link_layer, _ = sysfs.read(*parts, "ports", port, "link_layer")
-        devices.setdefault(pci or "", []).append(RDMADevice(
+                link_layer = _reading(
+                    sysfs, parts + ("ports", port, "link_layer"))
+        if link_layer is None:
+            link_layer = Reading(None, _path(*parts, "ports"), UNAVAILABLE)
+        readings = (pci, node_type, link_layer, *states)
+        unreadable = tuple(
+            f"{reading.source} could not be read"
+            for reading in readings if reading.confidence == UNREADABLE)
+        devices.append(RDMADevice(
             name=name, pci_address=pci, node_type=node_type,
-            link_layer=link_layer, port_states=tuple(states)))
-    return devices
+            link_layer=link_layer, port_states=tuple(states),
+            problems=unreadable))
+    return tuple(devices)
 
 
 def collect_nic_inventory(
@@ -245,8 +264,13 @@ def collect_nic_inventory(
     """
     sysfs = sysfs or SysfsReader()
     base = ("sys", "class", "net")
-    rdma = _rdma_devices(sysfs)
+    rdma_devices = _rdma_devices(sysfs)
+    rdma_by_pci: dict[str, list[RDMADevice]] = {}
+    for device in rdma_devices:
+        if device.pci_address.known:
+            rdma_by_pci.setdefault(str(device.pci_address.value), []).append(device)
     interfaces, problems = [], []
+    attached_rdma = set()
     names = sysfs.directories(*base)
     virtual_names = sysfs.directories("sys", "devices", "virtual", "net")
     if not names:
@@ -257,6 +281,8 @@ def collect_nic_inventory(
         pci = uevent["PCI_SLOT_NAME"]
         driver = uevent["DRIVER"]
         kind_type = _reading(sysfs, parts + ("type",), convert=int)
+        matching_rdma = tuple(rdma_by_pci.get(str(pci.value), ())) if pci.known else ()
+        attached_rdma.update(matching_rdma)
         interface = NetworkInterface(
             name=name,
             kind=_classify(kind_type, pci, name, virtual_names),
@@ -268,7 +294,7 @@ def collect_nic_inventory(
             operstate=_reading(sysfs, parts + ("operstate",)),
             mtu=_reading(sysfs, parts + ("mtu",), convert=_positive_int),
             speed_mbps=_reading(sysfs, parts + ("speed",), convert=_positive_int),
-            rdma=tuple(rdma.get(pci.value, ())) if pci.value else (),
+            rdma=matching_rdma,
         )
         unreadable = tuple(
             f"{field}: {getattr(interface, field).source} could not be read"
@@ -277,9 +303,26 @@ def collect_nic_inventory(
             if getattr(interface, field).confidence == UNREADABLE
         )
         interfaces.append(replace(interface, problems=unreadable))
+    unattached_rdma = tuple(
+        device for device in rdma_devices if device not in attached_rdma)
+    for device in rdma_devices:
+        problems.extend(
+            f"RDMA device {device.name}: {problem}"
+            for problem in device.problems)
+    for device in unattached_rdma:
+        if device.pci_address.known:
+            problems.append(
+                f"RDMA device {device.name}: no network interface shares PCI "
+                f"address {device.pci_address.value}")
+        else:
+            problems.append(
+                f"RDMA device {device.name}: {device.pci_address.source} is "
+                f"{device.pci_address.confidence}; cannot associate it with a "
+                "network interface")
     return NodeNICInventory(
         node_id=node_id, node_name=node_name,
-        interfaces=tuple(interfaces), problems=tuple(problems))
+        interfaces=tuple(interfaces), problems=tuple(problems),
+        unattached_rdma=unattached_rdma)
 
 
 def _probe_node_nics() -> dict:
@@ -343,5 +386,6 @@ def discover_nic_inventory(*, timeout: float = 30) -> tuple[NodeNICInventory, ..
         inventory = result["inventory"]
         inventories.append(NodeNICInventory(
             node_id=expected_id, node_name=name,
-            interfaces=inventory.interfaces, problems=inventory.problems))
+            interfaces=inventory.interfaces, problems=inventory.problems,
+            unattached_rdma=inventory.unattached_rdma))
     return tuple(sorted(inventories, key=lambda item: item.node_name))

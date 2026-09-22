@@ -92,6 +92,13 @@ one. A Mellanox port therefore reports both its Ethernet identity and the
 `mlx5_0` device beside it, which is what a later affinity graph needs to tell
 an RDMA-capable path from a plain one.
 
+RDMA PCI identity, node type, link layer, and port states are also `Reading`
+values with source and confidence. If an RDMA device cannot be matched because
+its PCI identity is unreadable or no interface shares it, the device remains in
+the node's `unattached_rdma` list and the node records a diagnostic. An
+inaccessible RDMA device therefore cannot look like a host with no RDMA
+hardware.
+
 ## Run it
 
 ```bash

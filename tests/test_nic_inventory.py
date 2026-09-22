@@ -166,9 +166,12 @@ class RDMATests(unittest.TestCase):
         (interface,) = inventory.interfaces
         (device,) = interface.rdma
         self.assertEqual(device.name, "mlx5_0")
-        self.assertEqual(device.pci_address, "0000:3b:00.0")
-        self.assertEqual(device.link_layer, "InfiniBand")
-        self.assertEqual(device.port_states, ("1:4: ACTIVE",))
+        self.assertEqual(device.pci_address.value, "0000:3b:00.0")
+        self.assertEqual(device.pci_address.confidence, REPORTED)
+        self.assertEqual(device.link_layer.value, "InfiniBand")
+        self.assertEqual(device.port_states[0].value, "1:4: ACTIVE")
+        self.assertEqual(device.port_states[0].source,
+                         "/sys/class/infiniband/mlx5_0/ports/1/state")
 
     def test_rdma_is_not_attached_to_an_unrelated_interface(self):
         other = "DRIVER=igb\nPCI_SLOT_NAME=0000:04:00.0\n"
@@ -179,6 +182,33 @@ class RDMATests(unittest.TestCase):
     def test_interface_without_pci_never_inherits_an_rdma_device(self):
         inventory = collect(net("br0", ETHERNET), self.fabric())
         self.assertEqual(inventory.interfaces[0].rdma, ())
+
+    def test_unreadable_rdma_identity_is_retained_as_partial_data(self):
+        fabric = self.fabric()
+        fabric["sys/class/infiniband/mlx5_0/device"]["uevent"] = DENIED
+        fabric["sys/class/infiniband/mlx5_0"]["node_type"] = DENIED
+        fabric["sys/class/infiniband/mlx5_0/ports/1"]["state"] = DENIED
+        fabric["sys/class/infiniband/mlx5_0/ports/1"]["link_layer"] = DENIED
+        inventory = collect(net("eth0", ETHERNET, uevent=MELLANOX_UEVENT), fabric)
+        self.assertEqual(inventory.interfaces[0].rdma, ())
+        (device,) = inventory.unattached_rdma
+        self.assertEqual(device.name, "mlx5_0")
+        for reading in (device.pci_address, device.node_type,
+                        device.link_layer, device.port_states[0]):
+            self.assertIsNone(reading.value)
+            self.assertEqual(reading.confidence, UNREADABLE)
+        self.assertTrue(device.problems)
+        self.assertTrue(any("cannot associate" in problem
+                            for problem in inventory.problems))
+
+    def test_known_unmatched_rdma_device_is_retained(self):
+        inventory = collect(net("eth1", ETHERNET,
+                                uevent="PCI_SLOT_NAME=0000:04:00.0\n"),
+                            self.fabric())
+        (device,) = inventory.unattached_rdma
+        self.assertEqual(device.pci_address.value, "0000:3b:00.0")
+        self.assertTrue(any("no network interface shares PCI" in problem
+                            for problem in inventory.problems))
 
 
 class SerializationTests(unittest.TestCase):
