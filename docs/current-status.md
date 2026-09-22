@@ -23,7 +23,8 @@ inference benchmark or multi-GPU validation.
 | V1.1 inventory and V1.2 intra-node topology | Physical one-GPU inventory validated; pair topology remains unverified | The [single-GPU report](one-gpu-validation.md) records real NVML identity, memory, and PCI discovery. [Inventory tests](../tests/test_inventory.py) cover pair topology with mocked NVML. No physical GPU pair was available, and graph edges remain observational rather than scoring inputs or UUID enforcement. |
 | KAI object and lifecycle adapter | Implemented; mocked Kubernetes tests and synthetic manifests | [KAI tests](../tests/test_kai_backend.py), [manifest example](../examples/kai_manifest.py); live-cluster admission, execution, and cleanup need validation. |
 | Dynamo V1 | Contract, environment recipe, and lifecycle adapter implemented; GPU-unverified | [Contract tests](../tests/test_dynamo_contract.py), [contract](dynamo-v1-contract.md); [lifecycle guide](dynamo-lifecycle.md), [CPU tests](../tests/test_dynamo_backend.py), and [simulated Ray smoke](../examples/dynamo_smoke.py); [GPU validation #3](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/3) remains outstanding. |
-| GPU-to-NIC affinity and inter-node discovery | Planned | [NIC inventory #14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14), [NUMA/NIC mapping #15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15), [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16), [network measurements #17](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/17). |
+| NIC inventory | Implemented; fixtures, mocked Ray tests, and same-host real-Ray/sysfs smoke | [NIC tests](../tests/test_nic_inventory.py), [discovery tests](../tests/test_nic_discovery.py), [Ray smoke](../examples/ray_nic_smoke.py), [example](../examples/nic_inventory.py), [guide](nic-inventory.md); advertised speed is not measured throughput, and no physical InfiniBand or multi-NIC host has been inventoried. |
+| GPU-to-NIC affinity and inter-node discovery | Planned | [NUMA/NIC mapping #15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15), [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16), [network measurements #17](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/17). |
 
 ## Versions
 
@@ -65,6 +66,7 @@ python -m examples.plan
 python -m examples.compare_policies
 python -m examples.kai_manifest
 python -m examples.kai_submit --help
+python -m examples.nic_inventory
 ```
 
 The list must match the allowlist in [the checker](../scripts/check_docs.py).
