@@ -4,13 +4,13 @@
 NVLink, PCI/NUMA ancestry, NUMA membership, and GPU-to-NIC affinity relationships.
 It does not collapse those observations into one numeric distance or cost.
 
-The graph API and CPU example are implemented. Automatic NIC discovery
-([#14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14))
-and GPU/NUMA/NIC derivation
-([#15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15))
-remain separate collector PRs. `from_observations()` adapts their exported
-snapshots without importing or changing their implementations. This PR needs
-neither collector installed for graph tests and claims no real-cluster validation.
+The graph API, CPU example, and [NIC collector](nic-inventory.md) are implemented.
+GPU/NUMA/NIC derivation remains in [PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29)
+for [#15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15).
+`from_observations()` adapts exported snapshots without changing the collectors.
+Graph tests run without optional dependencies or hardware; integration tests
+exercise the NIC collector using sysfs fixtures. No physical affinity validation
+is claimed.
 
 ## API and stable identities
 
@@ -137,11 +137,12 @@ graph = TopologyGraph.from_observations(
 ```
 
 The GPU argument is one `RayNodeInventory` or its JSON dictionary. Optional
-snapshots use the public dictionary shapes from [NIC PR #33](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/33)
+snapshots use the public dictionary shapes from the merged [NIC collector](nic-inventory.md)
 and [locality PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29).
 The adapter only reads these records; it never starts Ray or discovers devices.
-After the collectors land, callers obtain their results using their existing
-discovery functions and join records by `node_id` before passing one node here.
+NIC collection is available through `discover_nic_inventory()`; host locality
+collection remains in PR #29. Callers join collector records by `node_id`
+before passing one node here.
 Collectors should retain these exported fields, or coordinate a schema update:
 
 | Input | Fields used to construct relationships |
@@ -174,7 +175,7 @@ a separate `pcie_ancestry` edge with value `shared-ancestor` and the raw ancesto
 in evidence. Edge confidence stays `unknown` because these snapshots do not
 provide an edge-confidence assessment; per-field confidence remains intact.
 
-To process exported per-node JSON files without installing either collector:
+To process exported per-node JSON files without running discovery:
 
 ```bash
 python -m examples.topology_graph --gpu-inventory gpu.json --nic-inventory nics.json --host-topology host.json
@@ -186,6 +187,13 @@ makes no claim that supplied files came from physical hardware. Omitting NIC
 or locality input preserves the available information; GPU-only behavior is
 unchanged. The adapter tests cover these source schemas, conflicts, unknowns,
 equal-distance ties, and canonical round trips.
+
+The adapter suite also runs the merged NIC collector against in-memory sysfs
+fixtures, then converts its actual `NodeNICInventory` objects and JSON exports.
+It checks attached and unmatched RDMA evidence, advertised speed, diagnostics,
+unreadable/unsupported fields, NUMA membership, and affinity ties when a locality
+fixture is supplied. This is collector integration coverage without physical
+hardware; it does not validate live GPU-to-NIC proximity.
 
 From the repository root, run:
 

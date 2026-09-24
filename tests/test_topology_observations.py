@@ -172,6 +172,62 @@ class ObservationAdapterTests(unittest.TestCase):
         self.assertEqual(graph.to_json(), self.graph().to_json())
         self.assertEqual(self.nic["interfaces"][0]["name"], "eth0")
 
+    def test_nic_collector_output_joins_locality_and_retains_full_evidence(self):
+        from topology_scheduler.nic_inventory import collect_nic_inventory
+        from tests.test_nic_inventory import ETHERNET, FakeSysfs, net
+
+        tree = {}
+        for interface in self.nic["interfaces"]:
+            name = interface["name"]
+            tree.update(net(name, ETHERNET,
+                            uevent=f"PCI_SLOT_NAME={interface['pci_address']['value']}\nDRIVER=mlx5_core\n"))
+            tree[f"sys/class/net/{name}/device"]["numa_node"] = str(interface["numa_node"]["value"])
+        # Include both attached and unmatched RDMA evidence in the real export.
+        for name, pci in (("mlx5_0", "0000:02:00.0"), ("mlx5_1", "0000:99:00.0")):
+            tree[f"sys/class/infiniband/{name}"] = {"node_type": "1: CA"}
+            tree[f"sys/class/infiniband/{name}/device"] = {"uevent": f"PCI_SLOT_NAME={pci}\n"}
+            tree[f"sys/class/infiniband/{name}/ports/1"] = {
+                "state": "4: ACTIVE", "link_layer": "InfiniBand"}
+        snapshot = collect_nic_inventory(node_id="node-a", node_name="a", sysfs=FakeSysfs(tree))
+        self.assertEqual(len(snapshot.unattached_rdma), 1)
+        self.assertTrue(snapshot.interfaces[0].rdma)
+        graph = TopologyGraph.from_observations(self.inventory,
+                    nic_inventory=snapshot, host_topology=self.host)
+        serialized = snapshot.as_dict()
+        node = next(v for v in graph.vertices if v.kind == "node")
+        self.assertEqual(node.attributes["nic_inventory"],
+                         {k: v for k, v in serialized.items() if k != "interfaces"})
+        for vertex in (v for v in graph.vertices if v.kind == "nic"):
+            self.assertEqual(vertex.attributes["nic_inventory"], next(
+                n for n in serialized["interfaces"] if n["name"] == vertex.attributes["name"]))
+        gpu = TopologyVertex("gpu", "node-a", "GPU-a").id
+        self.assertEqual([v.attributes["name"] for v in graph.nics_near_gpu(gpu)], ["eth0", "eth1"])
+        from_dict = TopologyGraph.from_observations(self.inventory,
+                    nic_inventory=serialized, host_topology=self.host)
+        self.assertEqual(graph.to_json(), from_dict.to_json())
+        self.assertEqual(TopologyGraph.from_json(graph.to_json()).to_json(), graph.to_json())
+
+    def test_partial_nic_collector_output_does_not_invent_locality(self):
+        from topology_scheduler.nic_inventory import collect_nic_inventory
+        from tests.test_nic_inventory import DENIED, INVALID, ETHERNET, FakeSysfs, net
+
+        tree = net("eth0", dict(ETHERNET, speed=INVALID))
+        tree["sys/class/net/eth0/device"] = {"uevent": DENIED, "numa_node": DENIED}
+        snapshot = collect_nic_inventory(node_id="node-a", sysfs=FakeSysfs(tree))
+        graph = TopologyGraph.from_observations(self.inventory, nic_inventory=snapshot)
+        nic = next(v for v in graph.vertices if v.kind == "nic")
+        evidence = nic.attributes["nic_inventory"]
+        self.assertEqual(evidence, snapshot.interfaces[0].as_dict())
+        self.assertEqual(evidence["numa_node"]["confidence"], "unreadable")
+        self.assertEqual(evidence["speed_mbps"]["confidence"], "unsupported")
+        self.assertTrue(evidence["problems"])
+        self.assertFalse(any(v.kind == "numa" for v in graph.vertices))
+        self.assertEqual(graph.gpus_near_nic(nic.id), ())
+        affinities = [e for e in graph.relationships if e.kind == "gpu_nic_affinity"]
+        self.assertEqual(len(affinities), 2)
+        self.assertTrue(all(e.state == "unknown" and e.reason for e in affinities))
+        self.assertEqual(TopologyGraph.from_json(graph.to_json()).to_json(), graph.to_json())
+
     def test_file_example_loads_exported_snapshots_and_prints_queries(self):
         from examples.topology_graph import main
 
