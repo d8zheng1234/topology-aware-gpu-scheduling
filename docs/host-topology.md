@@ -15,7 +15,8 @@ nothing in this module binds a GPU or a NIC to a workload.
 ```mermaid
 flowchart LR
     N[NVML: GPU UUID and PCI bus ID] --> C[collect_host_topology]
-    S["sysfs: PCI tree, numa_node,<br/>net interfaces, speed"] --> C
+    I["NIC inventory: interfaces,<br/>PCI function, NUMA, speed"] --> C
+    S["sysfs: PCI tree and<br/>numa_node per function"] --> C
     C --> G[GPULocality: NUMA node and PCI path]
     C --> P[NICProximity per interface, with evidence]
     C --> D[Diagnostics for every unknown]
@@ -23,23 +24,36 @@ flowchart LR
     P --> R
 ```
 
-## What is read
+## Where each half comes from
 
-| Source | Used for |
-| --- | --- |
-| `/sys/devices/pci*/**` | The PCI hierarchy, walked by directory name so each function's ancestry is known |
-| `<pci device>/numa_node` | The NUMA node of a GPU or a NIC |
-| `/sys/devices/**/net/*` | Interfaces attached to a PCI function |
-| `/sys/devices/virtual/net/*` | Virtual interfaces such as loopback and bridges |
-| `<interface>/speed`, `<interface>/operstate` | Advertised Mbit/s and link state |
+The interfaces are **not** read here. [`collect_nic_inventory()`](nic-inventory.md)
+already reads every interface under `/sys/class/net` with each field's source
+and confidence, so this collector consumes that record and adds only what
+proximity needs and an inventory cannot carry: where each PCI function sits in
+the host's device tree.
+
+| Source | Read by | Used for |
+| --- | --- | --- |
+| `/sys/class/net/*` | NIC inventory | Interface identity, kind, MAC, MTU, driver, state, advertised speed, RDMA |
+| `/sys/class/net/<name>/device/uevent` | NIC inventory | The interface's PCI function |
+| `/sys/class/net/<name>/device/numa_node` | NIC inventory | The NUMA node of an interface |
+| `/sys/devices/pci*/**` | This module | The PCI hierarchy, walked by directory name so each function's ancestry is known |
+| `<gpu pci function>/numa_node` | This module | The NUMA node of a GPU |
 
 GPU identity still comes from NVML through the existing V1.2 probe: the UUID
 and PCI bus ID are the stable identifiers, and NVML's eight-digit domain is
 normalized to the four-digit sysfs form by `normalize_pci_address()`.
 
-Reads go through `SysfsReader`, which is the only part that touches a
-filesystem. Fixtures subclass it, so the classification logic is tested without
-a host, a GPU, or root access.
+Both collectors share one `SysfsReader`, the inventory's, which is the only
+part that touches a filesystem. Fixtures subclass it, so the classification
+logic is tested without a host, a GPU, or root access. Passing `inventory=` to
+`collect_host_topology()` reuses an inventory already read from the same host
+instead of collecting a second one.
+
+Each `HostNIC` keeps its inventory record on `nic.interface`, so per-field
+provenance survives into the map: `nic.interface.speed_mbps` still names the
+file it came from and how much the answer is worth, while `nic.speed_mbps`,
+`nic.numa_node`, `nic.kind`, and `nic.operstate` are the plain values.
 
 ## How proximity is decided
 
@@ -66,12 +80,18 @@ result, and every gap adds a diagnostic naming the GPU or interface:
 | Situation | Result |
 | --- | --- |
 | `numa_node` holds `-1` | NUMA node is `None`; the kernel does not know |
-| `numa_node` is absent | NUMA node is `None`, reported as `missing` |
-| `numa_node` cannot be read | NUMA node is `None`, reported as `unreadable`, with the error type |
+| `numa_node` is absent | NUMA node is `None`, reported as `unavailable` |
+| `numa_node` cannot be read | NUMA node is `None`, reported as `unreadable` |
 | The GPU's PCI address is not under `/sys/devices` | The GPU is kept with an empty PCI path and every interface is `unknown` |
-| An interface has no PCI device | It is kept, marked `virtual`, and classified `unknown` |
-| `speed` is `-1` or unreadable | `speed_mbps` is `None` |
-| No interfaces exist at all | A diagnostic says so, and the GPU list is still returned |
+| An interface has no PCI function | It is kept with the inventory's kind, `loopback` or `virtual`, and classified `unknown` |
+| An interface's PCI function is not under `/sys/devices` | It is kept with an empty PCI path, a diagnostic, and `unknown` |
+| `speed` is `-1` or unreadable | `speed_mbps` is `None`, and the inventory records which of the two it was |
+| No interfaces exist at all | The inventory's own diagnostic is carried through, and the GPU list is still returned |
+
+Only the two findings that change a proximity answer — an unusable PCI address
+and an unknown NUMA node — are repeated as diagnostics here. Every other
+per-field problem stays where the inventory recorded it, on `nic.interface`,
+rather than being copied into a second list that could drift from the first.
 
 ## Stable identity and ordering
 
@@ -115,10 +135,8 @@ for topology in discover_host_topology():
   and no interfaces, with diagnostics rather than errors.
 - Virtualized and containerized hosts often hide the PCI tree or report no NUMA
   node. Those cases stay `unknown`; they are not approximated.
-- Interface fields here are deliberately small.
-  [NIC inventory #14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14)
-  is expected to supply richer identity, state, and advertised speed, and can
-  replace this collector's interface reads without changing the classification.
+- Advertised speed comes from the inventory and is what the driver reports the
+  link negotiated, never application throughput.
 - These observations are not yet a typed graph;
   [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16)
   is where placement policies would consume them.

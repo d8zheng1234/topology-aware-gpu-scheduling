@@ -77,10 +77,10 @@ published release. See [current status and validation](docs/current-status.md).
   their confidence, virtual classification requires explicit sysfs evidence,
   and Ray discovery validates markers before dispatch, cancels failed probes,
   and has deterministic tests plus a same-host two-node smoke check.
-- GPU to NUMA and nearest-NIC mapping read from host sysfs on each Ray node,
-  with PCI ancestry, per-interface proximity and its evidence, explicit unknown
-  states with diagnostics, stable ordering and serialization, and a runnable
-  example
+- GPU to NUMA and nearest-NIC mapping on each Ray node, built on that interface
+  inventory and adding each PCI function's ancestry, per-interface proximity
+  and its evidence, explicit unknown states with diagnostics, stable ordering
+  and serialization, and a runnable example
   ([PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29));
   proximity is structural and is not a bandwidth claim.
 

@@ -5,26 +5,31 @@ kernel's NUMA files, never entered by a user. Being close to a NIC does not
 promise measured bandwidth, and nothing here binds a GPU or a NIC to a
 workload; Ray, KAI, and the driver still choose devices.
 
-Every read goes through ``SysfsReader``, so the collector can be exercised
-against an in-memory fixture instead of a live host.
+The interfaces themselves come from the [NIC inventory](nic_inventory.py),
+which already reads every interface under ``/sys/class/net`` with per-field
+sources and confidence. This module adds only what proximity needs and the
+inventory does not carry: where each PCI function sits in the host's device
+tree. Both collectors share one ``SysfsReader``, so the whole map can be
+exercised against an in-memory fixture instead of a live host.
 """
 
 import re
 from dataclasses import asdict, dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Iterable
 
 from .inventory import GPUDevice, _node_marker
+from .nic_inventory import (
+    PHYSICAL, NetworkInterface, NodeNICInventory, SysfsReader,
+    collect_nic_inventory,
+)
 
-# sysfs locations this collector reads, for the record it returns.
+# sysfs locations this map is built from, for the record it returns.
 SOURCES = (
+    ("interfaces", "/sys/class/net/* (through the NIC inventory)"),
     ("pci_hierarchy", "/sys/devices/pci*/**"),
-    ("interfaces", "/sys/devices/**/net/*"),
-    ("virtual_interfaces", "/sys/devices/virtual/net/*"),
-    ("numa_node", "<pci device>/numa_node"),
-    ("speed", "<interface>/speed"),
-    ("operstate", "<interface>/operstate"),
+    ("gpu_numa_node", "<gpu pci function>/numa_node"),
+    ("nic_numa_node", "/sys/class/net/<name>/device/numa_node"),
 )
 _PCI_ADDRESS = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$")
 
@@ -52,19 +57,45 @@ class Proximity(str, Enum):
 
 @dataclass(frozen=True)
 class HostNIC:
-    """A network interface as the host describes it.
+    """A discovered interface, placed in the host's PCI hierarchy.
 
-    ``pci_address`` and ``numa_node`` are ``None`` for virtual interfaces such
-    as loopback and bridges, and whenever the kernel does not report them.
+    ``interface`` is the inventory's record, with every field's source and
+    confidence intact. Only the PCI ancestry is added here, because a single
+    address cannot say which bridge two functions share. ``pci_address`` is the
+    normalized form and is ``None`` for a virtual interface; ``pci_path`` is
+    empty when that address is not present under ``/sys/devices``.
     """
 
-    name: str
-    pci_address: str | None
-    pci_path: tuple[str, ...]
-    numa_node: int | None
-    speed_mbps: float | None
-    operstate: str | None
-    virtual: bool
+    interface: NetworkInterface
+    pci_address: str | None = None
+    pci_path: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return self.interface.name
+
+    @property
+    def kind(self) -> str:
+        """``physical``, ``virtual``, ``loopback``, or ``unknown``."""
+        return self.interface.kind
+
+    @property
+    def numa_node(self) -> int | None:
+        return self.interface.numa_node.value
+
+    @property
+    def speed_mbps(self) -> int | None:
+        """Advertised, not measured; ``None`` when the driver declined."""
+        return self.interface.speed_mbps.value
+
+    @property
+    def operstate(self) -> str | None:
+        return self.interface.operstate.value
+
+    def as_dict(self) -> dict:
+        return dict(self.interface.as_dict(),
+                    normalized_pci_address=self.pci_address,
+                    pci_path=list(self.pci_path))
 
 
 @dataclass(frozen=True)
@@ -131,8 +162,7 @@ class HostTopology:
             "node_name": self.node_name,
             "node_id": self.node_id,
             "gpus": [gpu.as_dict() for gpu in self.gpus],
-            "nics": [asdict(nic) | {"pci_path": list(nic.pci_path)}
-                     for nic in self.nics],
+            "nics": [nic.as_dict() for nic in self.nics],
             "diagnostics": list(self.diagnostics),
             "sources": dict(self.sources),
         }
@@ -156,42 +186,11 @@ def normalize_pci_address(value: str) -> str:
     return address
 
 
-class SysfsReader:
-    """Read-only access to one sysfs tree.
-
-    Tests and examples subclass this rather than building real directories,
-    because PCI addresses contain colons, which some filesystems reject.
-    """
-
-    def __init__(self, root: Path | str = "/"):
-        self.root = Path(root)
-
-    def directories(self, *parts: str) -> tuple[str, ...]:
-        """The names of a path's subdirectories, sorted, or empty if unreadable."""
-        try:
-            return tuple(sorted(
-                entry.name for entry in self.root.joinpath(*parts).iterdir()
-                if entry.is_dir()))
-        except OSError:
-            return ()
-
-    def read(self, *parts: str) -> tuple[str | None, str | None]:
-        """A file's stripped contents, or why it could not be read."""
-        try:
-            text = self.root.joinpath(*parts).read_text(
-                encoding="utf-8", errors="replace")
-        except FileNotFoundError:
-            return None, "missing"
-        except OSError as error:
-            return None, f"unreadable ({type(error).__name__})"
-        return text.strip(), None
-
-
 def _numa_node(sysfs: SysfsReader, parts: tuple[str, ...]) -> tuple[int | None, str | None]:
     """Read a device's NUMA node, distinguishing absent from unreadable."""
-    text, problem = sysfs.read(*parts, "numa_node")
+    text, confidence = sysfs.read(*parts, "numa_node")
     if text is None:
-        return None, f"numa_node {problem}"
+        return None, f"numa_node is {confidence}"
     try:
         value = int(text)
     except ValueError:
@@ -199,14 +198,6 @@ def _numa_node(sysfs: SysfsReader, parts: tuple[str, ...]) -> tuple[int | None, 
     if value < 0:
         return None, "kernel reports no NUMA node (-1)"
     return value, None
-
-
-def _number(text: str | None) -> float | None:
-    try:
-        value = float(text)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
 
 
 def _pci_devices(sysfs: SysfsReader) -> dict[str, tuple[str, ...]]:
@@ -230,39 +221,40 @@ def _pci_devices(sysfs: SysfsReader) -> dict[str, tuple[str, ...]]:
     return found
 
 
-def _interfaces(sysfs: SysfsReader, devices: dict[str, tuple[str, ...]]
+def _place_nics(inventory: NodeNICInventory, devices: dict[str, tuple[str, ...]]
                 ) -> tuple[list[HostNIC], list[str]]:
-    """Read every interface, PCI-attached or virtual, in a stable order."""
-    base = ("sys", "devices")
-    diagnostics: list[str] = []
-    nics: list[HostNIC] = []
+    """Locate each inventoried interface in the PCI tree, in a stable order.
 
-    def read_interface(parts, name, address, path, numa) -> HostNIC:
-        speed, _ = sysfs.read(*parts, "speed")
-        operstate, _ = sysfs.read(*parts, "operstate")
-        return HostNIC(
-            name=name, pci_address=address, pci_path=path, numa_node=numa,
-            speed_mbps=_number(speed), operstate=operstate,
-            virtual=address is None,
-        )
+    The inventory already decided what each interface is and how trustworthy
+    its fields are; nothing is re-read here. An interface whose PCI function is
+    not in the tree keeps its place with an empty path and a diagnostic, so it
+    still appears as ``UNKNOWN`` rather than vanishing.
 
-    for address, path in sorted(devices.items()):
-        device = base + path
-        names = sysfs.directories(*device, "net")
-        if not names:
-            continue
-        numa, problem = _numa_node(sysfs, device)
-        for name in names:
-            if problem:
-                diagnostics.append(f"interface {name} on {address}: {problem}")
-            nics.append(read_interface(device + ("net", name), name, address, path, numa))
-
-    virtual = base + ("virtual", "net")
-    for name in sysfs.directories(*virtual):
-        nics.append(read_interface(virtual + (name,), name, None, (), None))
-
-    if not nics:
-        diagnostics.append("no network interfaces were found under /sys/devices")
+    Only the two findings that change a proximity answer are reported: an
+    unusable PCI address and an unknown NUMA node. Every other per-field
+    problem stays where the inventory recorded it, on ``nic.interface``.
+    """
+    nics, diagnostics = [], []
+    for interface in inventory.interfaces:
+        address = None
+        if interface.pci_address.known:
+            try:
+                address = normalize_pci_address(str(interface.pci_address.value))
+            except ValueError:
+                diagnostics.append(
+                    f"interface {interface.name}: {interface.pci_address.source} "
+                    f"reported {interface.pci_address.value!r}, which is not a "
+                    "PCI address")
+        path = devices.get(address, ()) if address else ()
+        if address and not path:
+            diagnostics.append(
+                f"interface {interface.name}: PCI device {address} is not "
+                "present under /sys/devices, so its distance to a GPU is unknown")
+        if not interface.numa_node.known and interface.kind == PHYSICAL:
+            diagnostics.append(
+                f"interface {interface.name}: numa_node is "
+                f"{interface.numa_node.confidence}")
+        nics.append(HostNIC(interface=interface, pci_address=address, pci_path=path))
     return sorted(nics, key=lambda nic: nic.name), diagnostics
 
 
@@ -303,19 +295,26 @@ def collect_host_topology(
     sysfs: SysfsReader | None = None,
     node_name: str = "local",
     node_id: str = "local",
+    inventory: NodeNICInventory | None = None,
 ) -> HostTopology:
     """Map each GPU to its NUMA node and its distance to every interface.
 
     ``devices`` are the GPUs NVML reported; their UUIDs and PCI bus IDs stay
-    the identifiers throughout. Everything else is read through ``sysfs``,
-    which defaults to this host. A GPU or interface the kernel does not
-    describe is kept with an ``UNKNOWN`` classification and a reason rather
-    than dropped. Ordering is stable: GPUs by PCI address, interfaces by name,
-    and each GPU's interfaces by proximity and then name.
+    the identifiers throughout. The interfaces come from the NIC inventory,
+    collected here unless ``inventory`` supplies one already read from the same
+    host. Everything else is read through ``sysfs``, which defaults to this
+    host. A GPU or interface the kernel does not describe is kept with an
+    ``UNKNOWN`` classification and a reason rather than dropped. Ordering is
+    stable: GPUs by PCI address, interfaces by name, and each GPU's interfaces
+    by proximity and then name.
     """
     sysfs = sysfs or SysfsReader()
+    if inventory is None:
+        inventory = collect_nic_inventory(
+            sysfs=sysfs, node_id=node_id, node_name=node_name)
     pci = _pci_devices(sysfs)
-    nics, diagnostics = _interfaces(sysfs, pci)
+    nics, diagnostics = _place_nics(inventory, pci)
+    diagnostics.extend(inventory.problems)
 
     localities = []
     for device in devices:
