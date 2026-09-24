@@ -22,6 +22,7 @@ from statistics import median
 from typing import Iterable, Mapping
 
 from .inventory import _node_marker
+from .nic_inventory import collect_nic_inventory
 from .policy import positive
 
 SCHEMA_VERSION = 1
@@ -34,6 +35,7 @@ UNITS = {
     "rtt_min_seconds": "s",
     "started_at": "Unix epoch seconds (UTC)",
     "finished_at": "Unix epoch seconds (UTC)",
+    "nic_collected_at": "Unix epoch seconds (UTC), on the endpoint node",
     "advertised_mbps": "Mbit/s",
     "planner_bandwidth": "GB/s (decimal)",
 }
@@ -102,9 +104,10 @@ class ProbeParameters:
 class LinkEndpoint:
     """One side of a probe; interface fields are ``None`` when unavailable.
 
-    On Linux the interface owning ``address`` is resolved, and its advertised
-    speed is read from sysfs. Elsewhere, or for virtual interfaces without a
-    reported speed, both stay ``None``.
+    On Linux a unique primary IPv4 address match selects an interface from
+    the local NIC collector. ``nic`` retains its complete field evidence;
+    ``advertised_mbps`` is only a positive, reported speed. Missing metadata
+    stays explicit in ``diagnostics`` and does not invalidate a TCP result.
     """
 
     node_name: str
@@ -112,6 +115,16 @@ class LinkEndpoint:
     address: str
     interface: str | None = None
     advertised_mbps: float | None = None
+    nic: dict | None = None
+    nic_collected_at: float | None = None
+    interface_source: str | None = None
+    diagnostics: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "LinkEndpoint":
+        # Schema-v1 reports written before NIC integration have only the first
+        # five fields. JSON arrays become tuples again for record equality.
+        return cls(**{**value, "diagnostics": tuple(value.get("diagnostics", ()))})
 
 
 @dataclass(frozen=True)
@@ -174,8 +187,8 @@ class LinkMeasurement:
     @classmethod
     def from_dict(cls, value: dict) -> "LinkMeasurement":
         return cls(
-            source=LinkEndpoint(**value["source"]),
-            destination=LinkEndpoint(**value["destination"]),
+            source=LinkEndpoint.from_dict(value["source"]),
+            destination=LinkEndpoint.from_dict(value["destination"]),
             status=value["status"],
             started_at=value["started_at"],
             finished_at=value["finished_at"],
@@ -346,7 +359,7 @@ def _utc(timestamp: float) -> str:
 
 
 def _interface_for_address(address: str) -> str | None:
-    """Find the Linux interface whose primary IPv4 address is ``address``."""
+    """Find a unique Linux interface with this primary IPv4 address."""
     if not sys.platform.startswith("linux"):
         return None
     import fcntl
@@ -356,6 +369,7 @@ def _interface_for_address(address: str) -> str | None:
         names = [name for _, name in socket.if_nameindex()]
     except OSError:
         return None
+    matches = []
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         for name in names:
             try:
@@ -364,24 +378,44 @@ def _interface_for_address(address: str) -> str | None:
             except OSError:
                 continue
             if socket.inet_ntoa(reply[20:24]) == address:
-                return name
-    return None
-
-
-def _advertised_mbps(interface: str | None) -> float | None:
-    """Read the link speed Linux reports for an interface, when it has one."""
-    if interface is None:
-        return None
-    try:
-        value = float(Path("/sys/class/net", interface, "speed").read_text().strip())
-    except (OSError, ValueError):
-        return None
-    return value if value > 0 else None
+                matches.append(name)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _endpoint(node_name: str, node_id: str, address: str) -> LinkEndpoint:
-    interface = _interface_for_address(address)
-    return LinkEndpoint(node_name, node_id, address, interface, _advertised_mbps(interface))
+    """Join address identity with collector evidence on the probing node."""
+    common = dict(node_name=node_name, node_id=node_id, address=address)
+    try:
+        interface = _interface_for_address(address)
+    except OSError as error:
+        return LinkEndpoint(**common, diagnostics=(f"Interface lookup failed: {_describe(error)}",))
+    if interface is None:
+        return LinkEndpoint(**common, diagnostics=(
+            f"No unique Linux primary-IPv4 interface matched {address}; "
+            "NIC identity and advertised capacity are unknown. Check the node's "
+            "address configuration; IPv6 and non-Linux lookup are unsupported.",))
+    common.update(interface=interface, interface_source="Linux SIOCGIFADDR primary IPv4")
+    try:
+        inventory = collect_nic_inventory(node_name=node_name, node_id=node_id)
+    except OSError as error:
+        return LinkEndpoint(**common, diagnostics=(f"NIC collection failed: {_describe(error)}",))
+    common["nic_collected_at"] = time.time()
+    matches = [item for item in inventory.interfaces if item.name == interface]
+    if len(matches) != 1:
+        return LinkEndpoint(**common, diagnostics=tuple(inventory.problems) + (
+            f"Interface {interface} has no unique NIC inventory record; "
+            "it may have disappeared during discovery. Recollect on this node.",))
+    nic = matches[0]
+    speed = nic.speed_mbps
+    advertised = (speed.value if speed.known and speed.value is not None
+                  and speed.value > 0 else None)
+    diagnostics = list(inventory.problems) + list(nic.problems)
+    if advertised is None:
+        diagnostics.append(
+            f"Advertised speed for {interface} is unknown or nonpositive "
+            f"({speed.confidence}: {speed.source}); no capacity is inferred.")
+    return LinkEndpoint(**common, advertised_mbps=advertised, nic=nic.as_dict(),
+                        diagnostics=tuple(dict.fromkeys(diagnostics)))
 
 
 def _route_address(peer: str) -> str:
@@ -707,8 +741,9 @@ def _client_task(node_name: str, address: str, port: int,
     node_id = ray.get_runtime_context().get_node_id()
     try:
         endpoint = _endpoint(node_name, node_id, _route_address(address))
-    except OSError:
-        endpoint = LinkEndpoint(node_name, node_id, "unknown")
+    except OSError as error:
+        endpoint = LinkEndpoint(node_name, node_id, "unknown", diagnostics=(
+            f"Source route lookup failed: {_describe(error)}; NIC identity is unknown.",))
     started = time.time()
     result, error = _attempt(run_link_client, address, port, parameters)
     return {"endpoint": endpoint, "started_at": started, "finished_at": time.time(),
@@ -807,8 +842,10 @@ def _measure_batch(ray, batch, live, parameters, server_actor, client_task,
             task, task_error = clients.get(index, (None, ready_error))
             task = task or {}
             measurements.append(_measurement(
-                task.get("endpoint") or LinkEndpoint(source, *live[source]),
-                (info or {}).get("endpoint") or LinkEndpoint(destination, *live[destination]),
+                task.get("endpoint") or LinkEndpoint(source, *live[source], diagnostics=(
+                    "The source task returned no endpoint inventory; NIC identity is unknown.",)),
+                (info or {}).get("endpoint") or LinkEndpoint(destination, *live[destination], diagnostics=(
+                    "The destination actor returned no endpoint inventory; NIC identity is unknown.",)),
                 parameters,
                 task.get("started_at", batch_started),
                 task.get("finished_at", time.time()),

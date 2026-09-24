@@ -66,7 +66,10 @@ support](https://docs.ray.io/en/latest/ray-core/scheduling/accelerators.html).
 See **[V1.1 workflow](docs/v1.1-workflow.md)** for the full order from cluster
 startup and GPU discovery through planning, reservation, execution, and cleanup.
 The **[V1.2 topology guide](docs/v1.2-topology-discovery.md)** explains the new
-GPU relationship graph and its current enforcement boundary.
+GPU relationship graph and its current enforcement boundary. The
+**[single-GPU validation report](docs/one-gpu-validation.md)** records the first
+physical-GPU inventory, Ray assignment, oversubscription rejection, and direct
+CUDA smoke test.
 
 ## Evaluation
 
@@ -75,10 +78,11 @@ Normalized JCT is the stated evaluation metric. The exact normalization baseline
 ## Repository Status
 
 This repository includes an initial Python placement policy, automatic
-intra-node GPU topology discovery, opt-in inter-node TCP link measurement, a Ray
-execution adapter, and a KAI Scheduler lifecycle adapter. It is an experimental
-foundation: real GPU benchmarks, workload traces, NIC inventory and GPU-to-NIC
-affinity, and a physical multi-node link measurement are not yet included. The
+intra-node GPU topology discovery, a network interface inventory, opt-in
+inter-node TCP link measurement, a Ray execution adapter, and a KAI Scheduler
+lifecycle adapter. It is an experimental foundation: real GPU benchmarks,
+workload traces, GPU-to-NIC affinity, and physical multi-node link validation
+are not yet included. The
 [Dynamo lifecycle adapter](docs/dynamo-lifecycle.md) has CPU/fake-engine coverage;
 real Dynamo/CUDA inference remains unverified.
 
@@ -100,8 +104,9 @@ evidence required for completion. Track live assignments and progress in
 - **[Placement policy](topology_scheduler/policy.py)**: selects nodes using per-workload compute estimates, GPU memory/capacity and inter-node communication costs.
 - **[Ray adapter](topology_scheduler/ray_backend.py)**: atomically reserves bundles on those nodes, launches one task per GPU and releases resources on completion or failure.
 - **[V1.2 GPU inventory](topology_scheduler/inventory.py)**: probes every live GPU node and reads GPU identity plus pairwise PCI/NUMA ancestry and direct NVLink counts through Ray's bundled NVIDIA NVML support.
+- **[NIC inventory](topology_scheduler/nic_inventory.py)**: reads each node's interfaces, their PCI function, NUMA node, driver, state, advertised speed, and RDMA devices, with per-field confidence; see the **[guide](docs/nic-inventory.md)** and run `python -m examples.nic_inventory`.
 - **[V1 Dynamo contract](docs/dynamo-v1-contract.md)**: pins the Ray, Dynamo, vLLM, Python, CUDA, driver, Linux, model, ownership, readiness, and shutdown contract for independent single-GPU replicas.
-- **[Inter-node link measurement](docs/link-measurement.md)**: opt-in TCP throughput and latency probes between Ray nodes, normalized into planner bandwidth with each value's source recorded.
+- **[Inter-node link measurement](docs/link-measurement.md)**: opt-in TCP throughput and latency probes between Ray nodes, with NIC collector evidence on each endpoint and planner bandwidth provenance; missing identity stays explicit.
 
 ```bash
 python -m pip install -e '.[ray]'

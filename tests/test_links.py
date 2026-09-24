@@ -16,7 +16,7 @@ from topology_scheduler import (
 )
 from topology_scheduler.links import (
     FAILED, SUCCEEDED, TIMED_OUT, UNREACHABLE, ProbeServerStartError,
-    _advertised_mbps, _describe, _disjoint_batches, _gather,
+    _endpoint, _describe, _disjoint_batches, _gather,
     _interface_for_address, _live_topology_nodes, _measurement, _route_address,
 )
 
@@ -370,7 +370,11 @@ class LoopbackTests(unittest.TestCase):
     def test_linux_resolves_loopback_interface_without_a_speed(self):
         self.assertEqual(_interface_for_address("127.0.0.1"), "lo")
         self.assertIsNone(_interface_for_address("192.0.2.1"))
-        self.assertIsNone(_advertised_mbps("lo"))
+        endpoint = _endpoint("local", "local-id", "127.0.0.1")
+        self.assertIsNone(endpoint.advertised_mbps)
+        self.assertEqual(endpoint.nic["name"], "lo")
+        self.assertEqual(endpoint.nic["kind"], "loopback")
+        self.assertTrue(endpoint.diagnostics)
 
     def test_client_failure_releases_the_server_promptly(self):
         started = time.monotonic()

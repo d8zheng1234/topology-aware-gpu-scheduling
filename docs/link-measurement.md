@@ -79,7 +79,7 @@ Each `LinkMeasurement` describes one direction:
 | Field | Meaning |
 | --- | --- |
 | `direction` | `source->destination` topology names |
-| `source`, `destination` | Topology name, Ray node ID, IP address, interface, advertised Mbit/s |
+| `source`, `destination` | Topology name, Ray node ID, IP address, interface, advertised Mbit/s, NIC evidence, collection time, and metadata diagnostics |
 | `status` | `succeeded`, `failed`, `timed_out`, or `unreachable` |
 | `started_at`, `finished_at` | Unix epoch seconds (UTC); also `started_at_utc` as ISO 8601 |
 | `parameters` | The complete `ProbeParameters` used |
@@ -88,13 +88,37 @@ Each `LinkMeasurement` describes one direction:
 | `software` | Python, platform, Ray, and package versions on the source node, or on the driver when the probe never started |
 | `units` | The unit of every numeric field |
 
-The source address is the one the kernel routes from toward the destination.
-On Linux, each endpoint's interface is the one whose primary IPv4 address
-matches, and `advertised_mbps` is read from `/sys/class/net/<interface>/speed`.
-On other platforms, for IPv6 addresses, and for virtual interfaces without a
-reported speed, those fields are `null`. The NIC inventory planned in
-[issue #14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14)
-is expected to replace this best-effort lookup.
+The source address is selected by a UDP route lookup toward the destination
+before the TCP probe; the destination address is the listener's Ray address.
+On Linux, a unique primary IPv4 address match identifies an interface using
+`SIOCGIFADDR`. The probe then calls the merged [NIC collector](nic-inventory.md)
+on that same Ray node and selects only that named interface. It never chooses
+the fastest or first available NIC as a substitute.
+
+Each endpoint adds these optional fields to schema 1; the loader still accepts
+earlier reports without them:
+
+| Endpoint field | Meaning |
+| --- | --- |
+| `interface_source` | `Linux SIOCGIFADDR primary IPv4` when uniquely matched, otherwise `null` |
+| `nic` | The selected `NetworkInterface.as_dict()` record, or `null` if unavailable |
+| `nic_collected_at` | Unix epoch seconds on the endpoint node after collection, or `null` when collection did not complete |
+| `diagnostics` | Collector/node/field problems and reasons that NIC identity or advertised capacity is unavailable |
+
+`nic` retains interface kind, MAC, PCI, NUMA, driver, operational state, MTU,
+advertised speed, and attached RDMA evidence, including per-field source and
+confidence. `advertised_mbps` is derived only from a positive `reported` speed
+on that NIC. Missing, unreadable, unsupported, or nonpositive values remain
+`null` in this convenience field; their original readings remain under `nic`.
+Virtual interfaces can retain their identity even when they have no speed.
+
+IPv6, secondary addresses, non-Linux platforms, ambiguous matches, and an
+interface disappearing before collection leave missing identity explicit.
+Metadata gaps do not turn a successful TCP probe into a failure. If a worker
+never returns endpoint information, the record explains that too. Match and
+collection are not atomic; a matching address does not prove which physical
+wire carried the traffic, and no NIC is bound. Same-host traffic may stay in
+the kernel even when the address belongs to `eth0`.
 
 Times come from the source node's clock when the client ran, and from the
 driver's clock when it never started. Clock skew between nodes shifts
@@ -178,10 +202,17 @@ also run the real socket probe over `127.0.0.1` through
 `measure_loopback_link()`, which needs no Ray. That number describes the local
 kernel's loopback path and must never be used as a link cost.
 
+[NIC integration tests](../tests/test_link_nic_evidence.py) run the actual
+collector against in-memory sysfs and verify full evidence round trips, partial
+readings, unrelated NICs, ambiguous/missing interfaces, legacy report loading,
+and advertised-cost provenance. They require no physical NIC hardware.
+
 [The Ray smoke example](../examples/ray_link_smoke.py) starts two Ray nodes on
 one host, measures both directions through the real actor and task
 orchestration, and plans with the result. Its traffic never leaves the host; it
-tests orchestration, not a network.
+tests orchestration, not a network. On Linux it also asserts that both endpoint
+workers returned NIC collector evidence from real sysfs. Other platforms retain
+explicit unsupported-lookup diagnostics.
 
 ## Validate on a real cluster
 
@@ -254,8 +285,9 @@ No physical multi-node measurement has been recorded yet. To produce one:
 
 - Only TCP over each node's single Ray address is measured. Multi-rail
   selection, RDMA, and collective traffic are out of scope.
-- Interface and speed lookup is Linux-only, IPv4-only, and uses each
-  interface's primary address.
+- Address-to-interface matching is Linux-only, IPv4-only, and uses each
+  interface's primary address. It is observational rather than proof of packet
+  egress; bonded, virtual, and multi-rail paths are not traced to physical ports.
 - Results reflect the load present during the window; the probe cannot tell
   whether other traffic shared the path.
 - GPU-to-NIC placement from

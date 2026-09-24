@@ -11,6 +11,11 @@ published release. See [current status and validation](docs/current-status.md).
 
 ### Added
 
+- A reproducible single-GPU validation report and workflow covering physical
+  NVML inventory, Ray GPU assignment, oversubscription rejection, baseline
+  policies, backend contract suites, and a direct CUDA smoke test. Multi-GPU,
+  live KAI, and Dynamo/vLLM validation remain outstanding.
+
 - A persistent Ray-managed Dynamo replica adapter with atomic reservations,
   pinned TP=1 worker processes, readiness checks, Linux process-tree guardians,
   driver leases, rollback, and conservative cleanup/recovery. Includes CPU
@@ -62,6 +67,16 @@ published release. See [current status and validation](docs/current-status.md).
   tag-correction rules
   ([PR #25](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/25));
   no tag or release is published by it.
+- Network interface discovery on every live Ray node, recording MAC, PCI
+  function, NUMA node, driver, state, MTU, advertised link speed, and RDMA
+  devices matched by PCI address, with per-field source and confidence so an
+  unavailable, unsupported, or unreadable value is never mistaken for zero, a
+  runnable example, and stable serialization beside the GPU inventory
+  ([PR #33](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/33));
+  advertised speed is not measured throughput. PCI/driver read failures retain
+  their confidence, virtual classification requires explicit sysfs evidence,
+  and Ray discovery validates markers before dispatch, cancels failed probes,
+  and has deterministic tests plus a same-host two-node smoke check.
 
 - The Dynamo configuration is derived from the pinned contract through
   `DynamoConfig.from_contract()`, with declared adapter and caller ownership
@@ -72,8 +87,10 @@ published release. See [current status and validation](docs/current-status.md).
   diagnostics, JSON reuse under an explicit maximum age, and normalization into
   the planner's bandwidth map
   ([PR #27](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/27));
-  tested with mocks, loopback sockets, and two Ray nodes on one host, not on a
-  physical cluster.
+  endpoint records now retain the merged NIC collector's identity, PCI/NUMA,
+  RDMA, field provenance, partial states, and diagnostics. Earlier schema-1
+  reports remain loadable. Tested with fixtures, loopback sockets, and two Ray
+  nodes on one host, not on a physical cluster.
 - Planning records now state whether each bandwidth value was measured,
   advertised, a fallback, or supplied by the caller
   ([PR #27](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/27)).
@@ -94,10 +111,11 @@ published release. See [current status and validation](docs/current-status.md).
   placement scoring.
 - NVML may not expose a topology property on every driver and GPU; unavailable
   relationship fields are reported as `None`.
-- NIC inventory and GPU-to-NIC affinity are not discovered. Link measurement
-  resolves a probe's interface and advertised speed on Linux IPv4 only.
+- GPU-to-NIC affinity is not derived. NIC inventory reports advertised speed,
+  not measured throughput; virtualized hosts may leave PCI, NUMA, or speed unknown.
 - Link measurement covers TCP over each node's Ray address. It is not RDMA,
   GPUDirect RDMA, or NCCL throughput, and the cost model does not use RTT.
+  Matching probe addresses to interfaces is Linux primary-IPv4-only.
 
 ### Planned
 

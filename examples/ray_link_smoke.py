@@ -1,5 +1,6 @@
 """Two local Ray nodes on one host; tests link-probe orchestration only."""
 import json
+import sys
 
 import ray
 from ray.cluster_utils import Cluster
@@ -27,6 +28,18 @@ def main():
         assert [item.direction for item in report.measurements] == ["a->b", "b->a"]
         assert all(item.status == "succeeded" for item in report.measurements), \
             report.as_dict()
+        for item in report.measurements:
+            for endpoint in (item.source, item.destination):
+                # This smoke's Linux nodes use a host primary IPv4 address.
+                # Exercise real sysfs evidence on both the client and actor.
+                if sys.platform.startswith("linux"):
+                    assert endpoint.nic is not None, endpoint
+                    assert endpoint.nic["name"] == endpoint.interface
+                    assert endpoint.nic_collected_at is not None
+                    assert endpoint.interface_source == "Linux SIOCGIFADDR primary IPv4"
+                    assert "confidence" in endpoint.nic["speed_mbps"]
+                else:
+                    assert endpoint.nic is None and endpoint.diagnostics, endpoint
         resolution = resolve_link_costs(report, ["a", "b"], max_age_seconds=300)
         _, planning = plan_with_record(
             [Node(name, "SIMULATED", 1, 80) for name in ("a", "b")],

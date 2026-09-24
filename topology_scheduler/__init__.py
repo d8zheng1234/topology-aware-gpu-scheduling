@@ -20,6 +20,10 @@ from .links import (
     LinkMeasurementReport, LinkResolution, ProbeParameters, load_link_report,
     measure_loopback_link, measure_ray_links, resolve_link_costs,
 )
+from .nic_inventory import (
+    NetworkInterface, NodeNICInventory, RDMADevice, Reading, SysfsReader,
+    collect_nic_inventory, discover_nic_inventory,
+)
 
 __all__ = [
     "DynamoConfig", "DynamoService", "DynamoLifecycleError", "DynamoCleanupError",
@@ -32,5 +36,7 @@ __all__ = [
     "discover_planner_nodes", "load_link_report", "measure_loopback_link",
     "measure_ray_links", "preflight", "resolve_link_costs", "run_kai", "status",
     "submit", "discover_ray_gpu_inventory", "plan_with_record", "run_with_record",
+    "NetworkInterface", "NodeNICInventory", "RDMADevice", "Reading",
+    "SysfsReader", "collect_nic_inventory", "discover_nic_inventory",
     "validate_submission",
 ]
