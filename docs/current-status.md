@@ -11,17 +11,20 @@ the latest published Git tag is `v0.1.1`. Changes since that tag stay under
 means a real runtime uses artificial resources or synthetic workloads;
 **mocked** tests replace an external API. **Planned** means the implementation
 or validation is still outstanding. **Real-cluster-validated** requires a
-reproducible run artifact with hardware, versions, commands, and results.
-No real GPU cluster or inference benchmark evidence is recorded here.
+reproducible run artifact with hardware, versions, commands, and results. A
+[single-GPU report](one-gpu-validation.md) records physical inventory, Ray
+assignment, capacity rejection, and a direct CUDA smoke test. It is not an
+inference benchmark or multi-GPU validation.
 
 | Area | Current state | Evidence and remaining boundary |
 | --- | --- | --- |
 | Placement and five baseline policies | Implemented; synthetic planning and simulated matched trace execution | [Policy tests](../tests/test_policy.py), [baseline tests](../tests/test_baseline_policies.py), [trace tests](../tests/test_matched_trace.py), and [Ray trace example](../examples/compare_policy_traces.py); synthetic scores and simulated JCT ratios are not GPU benchmark evidence. |
-| Ray finite-task adapter | Implemented; mocked unit tests and simulated logical-GPU smoke coverage | [Tests](../tests/test_ray_backend.py), [single-node](../examples/ray_smoke.py) and [multi-node smoke](../examples/ray_multinode_smoke.py); no CUDA workload. |
-| V1.1 inventory and V1.2 intra-node topology | Implemented; mocked NVML tests | [Inventory tests](../tests/test_inventory.py); physical NVML validation remains outstanding. GPU edges are observational, not scoring inputs or UUID enforcement. |
+| Ray finite-task adapter | Implemented; real single-GPU assignment plus mocked and simulated coverage | The [single-GPU report](one-gpu-validation.md) verifies one physical GPU assignment and two-worker capacity rejection. [Tests](../tests/test_ray_backend.py), [single-node](../examples/ray_smoke.py), and [multi-node smoke](../examples/ray_multinode_smoke.py) cover other control paths. No CUDA workload ran inside a Ray task. |
+| V1.1 inventory and V1.2 intra-node topology | Physical one-GPU inventory validated; pair topology remains unverified | The [single-GPU report](one-gpu-validation.md) records real NVML identity, memory, and PCI discovery. [Inventory tests](../tests/test_inventory.py) cover pair topology with mocked NVML. No physical GPU pair was available, and graph edges remain observational rather than scoring inputs or UUID enforcement. |
 | KAI object and lifecycle adapter | Implemented; mocked Kubernetes tests and synthetic manifests | [KAI tests](../tests/test_kai_backend.py), [manifest example](../examples/kai_manifest.py); live-cluster admission, execution, and cleanup need validation. |
 | Dynamo V1 | Contract, environment recipe, and lifecycle adapter implemented; GPU-unverified | [Contract tests](../tests/test_dynamo_contract.py), [contract](dynamo-v1-contract.md); [lifecycle guide](dynamo-lifecycle.md), [CPU tests](../tests/test_dynamo_backend.py), and [simulated Ray smoke](../examples/dynamo_smoke.py); [GPU validation #3](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/3) remains outstanding. |
-| GPU-to-NIC affinity and inter-node discovery | Planned | [NIC inventory #14](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/14), [NUMA/NIC mapping #15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15), [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16), [network measurements #17](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/17). |
+| NIC inventory | Implemented; fixtures, mocked Ray tests, and same-host real-Ray/sysfs smoke | [NIC tests](../tests/test_nic_inventory.py), [discovery tests](../tests/test_nic_discovery.py), [Ray smoke](../examples/ray_nic_smoke.py), [example](../examples/nic_inventory.py), [guide](nic-inventory.md); advertised speed is not measured throughput, and no physical InfiniBand or multi-NIC host has been inventoried. |
+| GPU-to-NIC affinity and inter-node discovery | Planned | [NUMA/NIC mapping #15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15), [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16), [network measurements #17](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/17). |
 
 ## Versions
 
@@ -63,6 +66,7 @@ python -m examples.plan
 python -m examples.compare_policies
 python -m examples.kai_manifest
 python -m examples.kai_submit --help
+python -m examples.nic_inventory
 ```
 
 The list must match the allowlist in [the checker](../scripts/check_docs.py).

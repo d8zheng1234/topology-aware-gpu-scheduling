@@ -15,6 +15,11 @@ published release. See [current status and validation](docs/current-status.md).
   records, observed GPU-count JCT normalization, shared execution conformance
   tests, and a simulated two-node Ray comparison example
   ([PR #34](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/34)).
+- A reproducible single-GPU validation report and workflow covering physical
+  NVML inventory, Ray GPU assignment, oversubscription rejection, baseline
+  policies, backend contract suites, and a direct CUDA smoke test. Multi-GPU,
+  live KAI, and Dynamo/vLLM validation remain outstanding.
+
 - A persistent Ray-managed Dynamo replica adapter with atomic reservations,
   pinned TP=1 worker processes, readiness checks, Linux process-tree guardians,
   driver leases, rollback, and conservative cleanup/recovery. Includes CPU
@@ -66,6 +71,16 @@ published release. See [current status and validation](docs/current-status.md).
   tag-correction rules
   ([PR #25](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/25));
   no tag or release is published by it.
+- Network interface discovery on every live Ray node, recording MAC, PCI
+  function, NUMA node, driver, state, MTU, advertised link speed, and RDMA
+  devices matched by PCI address, with per-field source and confidence so an
+  unavailable, unsupported, or unreadable value is never mistaken for zero, a
+  runnable example, and stable serialization beside the GPU inventory
+  ([PR #33](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/33));
+  advertised speed is not measured throughput. PCI/driver read failures retain
+  their confidence, virtual classification requires explicit sysfs evidence,
+  and Ray discovery validates markers before dispatch, cancels failed probes,
+  and has deterministic tests plus a same-host two-node smoke check.
 
 - The Dynamo configuration is derived from the pinned contract through
   `DynamoConfig.from_contract()`, with declared adapter and caller ownership
@@ -88,7 +103,10 @@ published release. See [current status and validation](docs/current-status.md).
   placement scoring.
 - NVML may not expose a topology property on every driver and GPU; unavailable
   relationship fields are reported as `None`.
-- NIC affinity and inter-node bandwidth or latency are not discovered.
+- GPU-to-NIC affinity and inter-node bandwidth or latency are not discovered.
+  The NIC inventory reports advertised link speed from Linux sysfs only; that
+  is not measured throughput, and virtualized hosts often leave PCI, NUMA, or
+  speed unavailable.
 
 ### Planned
 
