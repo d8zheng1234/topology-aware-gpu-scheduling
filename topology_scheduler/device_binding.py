@@ -4,15 +4,13 @@ V1.2 discovers each GPU's UUID and PCI identity, but the task adapter reserves
 a node and Ray chooses the device. This module closes the gap it can and names
 the gap it cannot:
 
-- Ray's accelerator ids are **indices**, written into ``CUDA_VISIBLE_DEVICES``
-  in NVML enumeration order. Ray 2.55.0 never sets ``CUDA_DEVICE_ORDER``, and
-  CUDA's default ``FASTEST_FIRST`` ordering may disagree with NVML's, so the
-  same number can select a different physical GPU in each ordering. An index
-  is therefore not an identity, and this module resolves it to a UUID on the
-  node and reports the ordering it saw.
+- Ray's accelerator ids are visibility tokens, not proof of physical identity.
+  Even ``PCI_BUS_ID`` does not guarantee that CUDA and NVML indices agree.
+  The production path reads the actual CUDA-visible UUID and checks it against
+  the NVML reservation candidate and the planned UUID before running work.
 - A ``topology_gpu:<uuid>`` custom resource gives Ray's scheduler one unit per
-  physical device, so two tasks cannot hold the same device. That is mutual
-  exclusion, not device selection: Ray still assigns the CUDA device itself.
+  requested UUID among cooperating callers. These logical tokens do not bind
+  physical devices: Ray still assigns the CUDA device separately.
 
 What this provides, therefore, is **verification, not selection**. In
 ``VERIFY`` mode a worker whose device is not the planned one fails before it
@@ -38,7 +36,7 @@ MODES = (OBSERVE, VERIFY)
 
 
 class DeviceBindingError(RuntimeError):
-    """A planned device was not the device a worker received."""
+    """Device verification or workload execution failed, with observed identity."""
 
     def __init__(self, message: str, assignments: Sequence["DeviceAssignment"] = ()):
         super().__init__(message)
@@ -51,7 +49,7 @@ class DeviceBindingError(RuntimeError):
 
 def device_resource_key(uuid: str) -> str:
     """The Ray custom resource that represents one physical GPU."""
-    if not uuid or not uuid.strip():
+    if not isinstance(uuid, str) or not uuid.strip():
         raise ValueError("GPU UUID must be a nonempty string")
     return f"{DEVICE_RESOURCE_PREFIX}{uuid.strip()}"
 
@@ -59,9 +57,8 @@ def device_resource_key(uuid: str) -> str:
 def device_resources(devices: Iterable) -> dict[str, float]:
     """One unit per device, for a node's ``ray start --resources``.
 
-    Advertising these makes Ray's accounting one-to-one with physical GPUs, so
-    no two tasks can reserve the same device even though Ray still decides
-    which device each task sees.
+    These tokens serialize requests for a UUID among cooperating callers.
+    They do not control which physical GPU Ray assigns.
     """
     resources: dict[str, float] = {}
     for device in devices:
@@ -88,6 +85,7 @@ class DevicePlacement:
         for uuid in self.uuids:
             if not isinstance(uuid, str) or not uuid.strip():
                 raise ValueError("Every device UUID must be a nonempty string")
+        object.__setattr__(self, "uuids", tuple(uuid.strip() for uuid in self.uuids))
         if len(set(self.uuids)) != len(self.uuids):
             raise ValueError("One device cannot serve two ranks")
 
@@ -110,6 +108,8 @@ class DeviceAssignment:
     pci_bus_id: str | None = None
     device_order: str | None = None
     problem: str | None = None
+    ray_assigned_uuid: str | None = None
+    identity_source: str | None = None
 
     @property
     def matched(self) -> bool:
@@ -126,34 +126,52 @@ class DeviceAssignment:
 
 
 def resolve_device(accelerator_ids: Sequence, devices: Sequence, *,
-                   device_order: str | None = None) -> dict:
-    """Resolve Ray's accelerator ids to one physical device on this node.
+                   device_order: str | None = None, cuda_device: Mapping | None = None) -> dict:
+    """Cross-check Ray's reservation candidate against actual CUDA identity.
 
-    ``devices`` is the node's NVML-ordered device list, as V1.2 discovery
-    returns it. A reported ordering other than ``PCI_BUS_ID`` is a problem, not
-    a detail: CUDA would then number devices differently from NVML, and the
-    index Ray handed out could name a different GPU than the one it reserved.
+    NVML indices are matched by their explicit index field, never list position.
+    The CUDA observation is mandatory for success; an NVML guess alone cannot
+    populate ``assigned_uuid`` or count as verified.
     """
+    cuda_device = cuda_device or {}
+    actual = cuda_device.get("uuid") if cuda_device.get("available") else None
+    resolved = {"assigned_uuid": actual, "device_order": device_order}
+
+    def problem(message):
+        return {**resolved, "problem": message}
+
     if len(accelerator_ids) != 1:
-        return {"problem": (
+        return problem(
             f"Ray assigned {len(accelerator_ids)} devices to this worker; "
-            "device binding requires exactly one GPU per rank")}
-    try:
-        index = int(accelerator_ids[0])
-    except (TypeError, ValueError):
-        return {"problem": f"Ray accelerator id {accelerator_ids[0]!r} is not an index"}
-    if not 0 <= index < len(devices):
-        return {"problem": (
-            f"Ray assigned accelerator index {index}, but this node reports "
-            f"{len(devices)} devices; the raylet and NVML disagree")}
-    device = devices[index]
-    resolved = {"assigned_uuid": device.uuid, "assigned_index": index,
-                "pci_bus_id": device.pci_bus_id, "device_order": device_order}
+            "device binding requires exactly one GPU per rank")
+    token = accelerator_ids[0]
+    if type(token) is int or isinstance(token, str) and token.isascii() and token.isdecimal():
+        index = int(token)
+        matches = [item for item in devices if item.index == index]
+    elif isinstance(token, str) and token.startswith("GPU-"):
+        matches = [item for item in devices if item.uuid == token]
+    else:
+        return problem(f"Ray accelerator id {token!r} is not an index or full GPU UUID")
+    if len(matches) != 1:
+        return problem(f"Ray accelerator id {token!r} has no unique NVML device; "
+                       "the raylet and NVML disagree")
+    device = matches[0]
+    resolved.update(ray_assigned_uuid=device.uuid, assigned_index=device.index)
+    actual_devices = [item for item in devices if item.uuid == actual]
+    if len(actual_devices) == 1:
+        resolved["pci_bus_id"] = actual_devices[0].pci_bus_id
+    if not actual or cuda_device.get("device_count") != 1:
+        return problem("CUDA identity unavailable: " + cuda_device.get("reason", "exactly one CUDA UUID is required"))
+    if actual != device.uuid:
+        return problem(f"CUDA reports {actual}, but Ray's NVML reservation candidate is {device.uuid}; "
+                       "device numbering or visibility differs")
+    if len(actual_devices) != 1:
+        return problem("CUDA UUID has no unique NVML identity")
     if device_order != PCI_BUS_ID:
-        resolved["problem"] = (
+        return problem(
             f"{DEVICE_ORDER_ENV_VAR} is {device_order or 'unset'}; set it to "
-            f"{PCI_BUS_ID} on every worker so CUDA numbers devices the way NVML "
-            "does. Until then an accelerator index cannot identify a device.")
+            f"{PCI_BUS_ID} as required by this adapter. This setting alone does "
+            "not prove agreement with NVML; the CUDA UUID is also checked.")
     return resolved
 
 
@@ -167,6 +185,8 @@ def assignment_for(rank: int, node_name: str, requested_uuid: str | None,
         pci_bus_id=resolved.get("pci_bus_id"),
         device_order=resolved.get("device_order"),
         problem=resolved.get("problem"),
+        ray_assigned_uuid=resolved.get("ray_assigned_uuid"),
+        identity_source=resolved.get("identity_source"),
     )
 
 
@@ -207,13 +227,12 @@ def preflight_devices(plan: Plan, placement: DevicePlacement,
     bundle_resources(plan, placement)
     live = [node for node in nodes if node.get("Alive")]
     for rank, (node, key) in enumerate(zip(plan.workers, placement.resource_keys())):
-        holders = [item for item in live
-                   if item["Resources"].get(key, 0) > 0
-                   and item["Resources"].get(node.resource_key, 0) > 0]
-        if len(holders) != 1:
+        holders = [item for item in live if item["Resources"].get(key, 0) > 0]
+        if (len(holders) != 1 or holders[0]["Resources"].get(key) != 1
+                or holders[0]["Resources"].get(node.resource_key, 0) <= 0):
             raise ValueError(
                 f"rank {rank}: {key} must be advertised by exactly one live node "
-                f"that also advertises {node.resource_key}. Start that node with "
+                f"with exactly one unit and marker {node.resource_key}. Start that node with "
                 f"--resources including this device, as the guide describes.")
 
 
@@ -228,7 +247,7 @@ def _node_devices() -> tuple:
 
 def observe_worker_device(*, devices_provider: Callable[[], Sequence] | None = None,
                           accelerator_ids: Sequence | None = None,
-                          environ: Mapping | None = None) -> dict:
+                          environ: Mapping | None = None, cuda_provider=None) -> dict:
     """Resolve the device this worker received. Runs inside a Ray task."""
     import os
 
@@ -237,19 +256,30 @@ def observe_worker_device(*, devices_provider: Callable[[], Sequence] | None = N
 
         accelerator_ids = ray.get_gpu_ids()
     environ = os.environ if environ is None else environ
-    devices = (devices_provider or _node_devices)()
-    return resolve_device(accelerator_ids, devices,
-                          device_order=environ.get(DEVICE_ORDER_ENV_VAR))
+    from .cuda_identity import read_cuda_identity
+
+    source = "injected" if cuda_provider is not None or devices_provider is not None else "cuda_driver"
+    cuda_device = {}
+    try:
+        cuda_device = (cuda_provider or read_cuda_identity)()
+        devices = (devices_provider or _node_devices)()
+        resolved = resolve_device(accelerator_ids, devices,
+                                  device_order=environ.get(DEVICE_ORDER_ENV_VAR), cuda_device=cuda_device)
+    except Exception as error:
+        resolved = {"problem": f"Device identity query failed: {type(error).__name__}: {error}",
+                    "device_order": environ.get(DEVICE_ORDER_ENV_VAR),
+                    "assigned_uuid": cuda_device.get("uuid") if cuda_device.get("available") else None}
+    return {**resolved, "identity_source": source}
 
 
 def bind_worker(worker, placement: DevicePlacement, node_names: Sequence[str], *,
-                mode: str = VERIFY, devices_provider=None, environ=None):
+                mode: str = VERIFY, devices_provider=None, environ=None, cuda_provider=None):
     """Wrap a worker so it checks its device before doing any work.
 
     The wrapper returns ``{"device": ..., "result": ...}``; in ``VERIFY`` mode
     it raises before calling the worker, so a wrong device never runs the
-    workload at all. ``devices_provider`` and ``environ`` exist so tests and
-    examples can exercise this path without NVML or a particular environment.
+    workload at all. ``devices_provider``, ``cuda_provider`` and ``environ``
+    let tests and examples inject observations without hardware.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of: {', '.join(MODES)}")
@@ -257,16 +287,22 @@ def bind_worker(worker, placement: DevicePlacement, node_names: Sequence[str], *
 
     def bound(rank):
         resolved = observe_worker_device(
-            devices_provider=devices_provider, environ=environ)
+            devices_provider=devices_provider, environ=environ, cuda_provider=cuda_provider)
         assignment = assignment_for(rank, names[rank], uuids[rank], resolved)
         check_assignments([assignment], mode)
-        return {"device": assignment.as_dict(), "result": worker(rank)}
+        try:
+            result = worker(rank)
+        except Exception as error:
+            raise DeviceBindingError(
+                f"Worker rank {rank} on {names[rank]} failed after device observation: "
+                f"{type(error).__name__}: {error}", [assignment]) from error
+        return {"device": assignment.as_dict(), "result": result}
 
     return bound
 
 
 def run_with_devices(plan: Plan, placement: DevicePlacement, worker, *,
-                     mode: str = VERIFY, devices_provider=None, environ=None,
+                     mode: str = VERIFY, devices_provider=None, environ=None, cuda_provider=None,
                      **run_options):
     """Run one worker per planned device and report what each one received.
 
@@ -285,7 +321,7 @@ def run_with_devices(plan: Plan, placement: DevicePlacement, worker, *,
     preflight_devices(plan, placement, ray.nodes())
     payloads = run(plan, bind_worker(
         worker, placement, [node.name for node in plan.workers],
-        mode=mode, devices_provider=devices_provider, environ=environ),
+        mode=mode, devices_provider=devices_provider, environ=environ, cuda_provider=cuda_provider),
         extra_resources=bundle_resources(plan, placement), **run_options)
     assignments = tuple(DeviceAssignment.from_dict(item["device"]) for item in payloads)
     check_assignments(assignments, mode)

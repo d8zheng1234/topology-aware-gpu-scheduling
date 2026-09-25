@@ -3,13 +3,12 @@
 Ordinary CI never runs this. Without `--run` and NVIDIA GPUs it prints why it
 skipped and exits 0.
 
-The simulated smoke, `examples.ray_device_binding_smoke`, exercises every step
-except NVML itself. This closes the remaining one on real hardware: NVML names the
-node's devices, Ray assigns one to each rank, the binding layer resolves that
-assignment to a UUID, and the worker then asks the **CUDA driver** which device
-it would compute on. The driver's answer is independent evidence, because it is
-the same library a real workload goes through. It is read with `ctypes`, so no
-CUDA toolkit, PyTorch, or other runtime has to be installed on the host.
+The simulated smoke, `examples.ray_device_binding_smoke`, injects both NVML and
+CUDA observations. This opt-in check uses the real APIs: NVML names the node's
+devices, Ray assigns one to each rank, and the binding layer cross-checks the
+CUDA-visible UUID before starting the worker. The worker additionally creates
+a CUDA context and reads its device UUID. Both driver queries use `ctypes`, so
+no CUDA toolkit, PyTorch, or other runtime has to be installed on the host.
 
 The check creates and destroys one CUDA context and computes nothing. That is
 enough to name the device the process holds, and far short of a benchmark.

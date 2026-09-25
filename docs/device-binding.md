@@ -17,38 +17,51 @@ never silently moved.
 
 ## Why an index is not an identity
 
-Ray's accelerator ids are indices. It writes them into `CUDA_VISIBLE_DEVICES`
-in NVML enumeration order, and **Ray 2.55.0 never sets `CUDA_DEVICE_ORDER`**
-(checked against the pinned source tree). CUDA's default ordering is
-`FASTEST_FIRST`, which need not agree with NVML's, so the same number can
-select a different physical GPU in each ordering.
+Ray's accelerator IDs are visibility tokens, not physical identity evidence.
+Ray 2.55.0's [worker code](https://github.com/ray-project/ray/blob/ray-2.55.0/python/ray/_private/worker.py)
+preserves original visibility tokens when configured; they may be numeric IDs
+or GPU UUIDs. Its [NVIDIA accelerator manager](https://github.com/ray-project/ray/blob/ray-2.55.0/python/ray/_private/accelerators/nvidia_gpu.py)
+sets `CUDA_VISIBLE_DEVICES` and does not set `CUDA_DEVICE_ORDER`.
 
-That is why this module resolves an index to a UUID on the node, and why it
-treats any ordering other than `PCI_BUS_ID` as a problem rather than a detail.
-Start every worker with:
+[NVIDIA's NVML documentation](https://docs.nvidia.com/deploy/nvml-api/api/group__nvmlDeviceQueries.html)
+states that NVML indices need not correlate with CUDA indices. Setting
+`PCI_BUS_ID` alone therefore cannot prove agreement. The production verifier
+uses [CUDA driver device queries](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__DEVICE.html)
+to require exactly one visible device and read its UUID through `cuDeviceGetUuid`.
+It compares that observation with the requested UUID and the NVML candidate
+for Ray's token. A disagreement or unavailable observation refuses execution.
+Numeric tokens select an explicit NVML `index`, never a list position; full
+UUID tokens require an exact match. Ambiguous identities are rejected.
+
+The adapter retains its explicit ordering requirement as a configuration
+precondition, in addition to the driver check. Start every worker with:
 
 ```bash
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 ```
 
-Until that holds, an assignment is recorded but never counted as verified —
-even when the resolved UUID happens to equal the requested one, because the
-evidence for that equality is not trustworthy.
+The verifier does not set visibility, select a different GPU, or launch a CUDA
+kernel. It loads the installed driver lazily through `ctypes`; no CUDA toolkit
+or extra Python package is required. CUDA/NVML errors become refusal records.
+Numeric mappings that cannot be cross-checked are refused conservatively;
+this is not support for arbitrary container remapping, MIG, or fractional GPUs.
 
 ## What Ray can and cannot guarantee
 
 | Option | What it gives | Why it is or is not used |
 | --- | --- | --- |
-| Per-device custom resource `topology_gpu:<uuid>` | One unit per physical GPU, so two tasks cannot hold the same device | **Used.** Mutual exclusion only; Ray still picks which device each task sees |
+| Per-device custom resource `topology_gpu:<uuid>` | Serializes requests for a UUID among cooperating callers | **Used.** A logical token only; GPU allocation is separately managed by Ray and need not select that UUID |
 | Resolve and verify on the node | The rank learns its real UUID and refuses a mismatch | **Used.** This is the guarantee the adapter offers |
 | `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES` plus adapter-set visibility | True selection: the process sees exactly the chosen device | **Deferred.** It is explicitly experimental and moves device accounting out of Ray, so any workload on the cluster that does not follow the same discipline could claim the same GPU. That precondition needs a maintainer decision before it is safe |
 | One GPU per node | The mapping is trivial | Supported as a degenerate case; it is not a general answer |
 
-The combination in use is honest about its limit: the planned devices are
-reserved as a *set*, each rank reports which one it actually holds, and a wrong
-pairing fails instead of running. The [smoke example](../examples/ray_device_binding_smoke.py)
-demonstrates exactly this, including a run where Ray's pairing is recorded
-rather than assumed.
+The reservation contains the requested UUID tokens and generic GPUs. These are
+separate resources, so it does not guarantee even the requested physical set.
+Each rank checks its own actual identity before running. This is a per-rank
+check, not an all-rank startup barrier: a correctly assigned rank may begin
+before another rank refuses. The [smoke example](../examples/ray_device_binding_smoke.py)
+uses two simulated GPUs and separately injects CUDA/NVML disagreement to prove
+that the mismatched workers do not enter their bodies.
 
 ## Advertise the devices
 
@@ -65,6 +78,11 @@ Use the result in that node's `ray start --resources`, together with its
 existing `topology_node:<name>` marker. Without it the reservation would wait
 for a resource that never appears; `run_with_devices()` checks first and says
 which device is missing from which node.
+
+Each requested UUID must have exactly one unit on exactly one live node with
+the intended topology marker. Duplicate advertisements or fractional/multiple
+units are refused. Optional per-rank resources cannot override CPU, GPU,
+memory, or topology-node reservations.
 
 ## Run with device identity
 
@@ -91,25 +109,35 @@ Modes:
 - `observe` — the assignment is recorded and the workload runs anyway. Use it
   to measure how often Ray's pairing matches before relying on verification.
 
-Each `DeviceAssignment` records the rank, node, requested and assigned UUID,
-the accelerator index and PCI address it resolved through, the observed
-`CUDA_DEVICE_ORDER`, whether it matched, and any problem. It serializes to
-plain types for run records.
+Each `DeviceAssignment` records rank, node, requested UUID, actual CUDA-observed
+`assigned_uuid`, NVML candidate `ray_assigned_uuid`, candidate index, actual
+device PCI address when available, `CUDA_DEVICE_ORDER`, and any problem.
+`identity_source` distinguishes `cuda_driver` from explicitly injected test
+providers. A missing CUDA observation never becomes an assigned UUID just
+because NVML returned a candidate. Records serialize to plain dictionaries;
+older dictionaries without the new fields remain readable.
 
 A verification failure happens inside the Ray task, so it reaches the driver
 wrapped in Ray's task error; the underlying message is the one above.
+`DeviceBindingError.assignments` retains the refusing rank's observation.
+Workload exceptions are also wrapped with that rank's identity and preserve
+the original cause. A failed run does not promise a complete record for every
+other rank, particularly tasks canceled or lost before they report.
 
 ## Run it without a GPU
 
 ```bash
-python -m unittest tests.test_device_binding -v
+python -m unittest tests.test_device_binding tests.test_cuda_identity -v
 python -m examples.ray_device_binding_smoke
 ```
 
 The tests cover resolution, ordering, mismatches, preflight, both modes, and
 the one-GPU-per-node case with constructed devices. The smoke runs the real
 reservation and task path on one local Ray node with **simulated** logical GPUs
-and stand-in device identities, so it exercises everything except NVML itself.
+and stand-in NVML/CUDA identities. Driver-query tests cover missing libraries,
+driver errors, wrong visible-device counts, UUID decoding, and index mismatch
+even with `PCI_BUS_ID`; reservation tests cover duplicate UUIDs and resource
+overrides. These fixtures do not establish physical device assignment.
 
 ## Physical evidence
 
@@ -128,7 +156,7 @@ compares that answer with the UUID this layer resolved. That comparison is the
 point: not that two NVML reads agree with each other, but that the device the
 process actually holds is the planned one.
 
-Recorded run on 2026-09-20 — one NVIDIA GeForce RTX 5070 Laptop GPU, driver
+Historical run on 2026-09-20 (before the production CUDA UUID verifier) — one NVIDIA GeForce RTX 5070 Laptop GPU, driver
 610.74, Ray 2.55.0, Python 3.12.10, Windows 11:
 
 | Check | Result |
@@ -150,6 +178,8 @@ What that run does **not** establish:
   device; it does not show a kernel running on it, and it is not a benchmark.
 - **Windows on a consumer laptop GPU**, not the Linux amd64 hosts this project
   targets elsewhere.
+- The updated production CUDA UUID verification path needs its own hardware
+  run; this historical report is not reclassified as evidence for new code.
 
 ## Limits
 

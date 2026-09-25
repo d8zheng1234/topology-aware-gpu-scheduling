@@ -2,12 +2,11 @@
 
 One local Ray node advertises two **simulated** GPUs and one
 `topology_gpu:<uuid>` resource per device. The worker's device identity is
-supplied by a stand-in instead of NVML, so this runs anywhere; no CUDA work
+supplied by stand-ins instead of NVML and the CUDA driver, so this runs anywhere; no CUDA work
 happens and no physical GPU is touched.
 
-What it demonstrates is the finding behind this binding layer: the per-device
-custom resource gives Ray's scheduler one unit per GPU, so the two ranks
-together receive exactly the two planned devices and no device is used twice.
+The two ranks consume the node's two logical GPUs; custom UUID resources
+serialize their requests but do not control Ray's GPU pairing.
 It does **not** make Ray hand a particular device to a particular rank, which
 is why the default mode verifies the assignment rather than assuming it.
 """
@@ -36,6 +35,27 @@ def worker(rank):
     return {"rank": rank}
 
 
+def simulated_cuda():
+    index = int(ray.get_gpu_ids()[0])
+    return {"available": True, "device_count": 1, "uuid": DEVICES[index].uuid}
+
+
+def swapped_cuda():
+    index = int(ray.get_gpu_ids()[0])
+    return {"available": True, "device_count": 1, "uuid": DEVICES[1 - index].uuid}
+
+
+class Counter:
+    def __init__(self):
+        self.calls = 0
+
+    def record(self):
+        self.calls += 1
+
+    def total(self):
+        return self.calls
+
+
 def main():
     cluster = Cluster()
     try:
@@ -46,13 +66,14 @@ def main():
 
         results, assignments = run_with_devices(
             plan, PLACEMENT, worker, mode=OBSERVE,
-            devices_provider=lambda: DEVICES, environ=SAFE_ENV)
+            devices_provider=lambda: DEVICES, cuda_provider=simulated_cuda, environ=SAFE_ENV)
 
         assert [item["rank"] for item in results] == [0, 1], results
         assigned = sorted(item.assigned_uuid for item in assignments)
-        # Mutual exclusion holds: the ranks hold exactly the planned devices.
+        # Ray assigned both logical GPUs in this simulated two-GPU reservation.
         assert assigned == sorted(PLACEMENT.uuids), assigned
         assert all(item.problem is None for item in assignments), assignments
+        assert all(item.identity_source == "injected" for item in assignments)
         paired = all(item.matched for item in assignments)
 
         # Verification refuses a run whose device identity cannot be trusted:
@@ -60,7 +81,7 @@ def main():
         refused = None
         try:
             run_with_devices(plan, PLACEMENT, worker, mode=VERIFY,
-                             devices_provider=lambda: DEVICES, environ={})
+                             devices_provider=lambda: DEVICES, cuda_provider=simulated_cuda, environ={})
         except DeviceBindingError as error:
             # Ray wraps a worker-side failure in its own task error, so keep
             # the line that explains the refusal rather than the traceback.
@@ -69,6 +90,24 @@ def main():
                             if DEVICE_ORDER_ENV_VAR in line), plain[-300:])
         assert refused and DEVICE_ORDER_ENV_VAR in refused, refused
 
+        # Even PCI_BUS_ID is insufficient when CUDA and NVML disagree. Both
+        # ranks must refuse before entering their workload bodies.
+        counter = ray.remote(num_cpus=0)(Counter).remote()
+        def counted_worker(rank):
+            ray.get(counter.record.remote())
+            return rank
+        mismatch = None
+        try:
+            run_with_devices(plan, PLACEMENT, counted_worker, mode=VERIFY,
+                devices_provider=lambda: DEVICES, cuda_provider=swapped_cuda, environ=SAFE_ENV)
+        except DeviceBindingError as error:
+            mismatch = str(error)
+            assert error.assignments and error.assignments[0].assigned_uuid
+            assert "numbering or visibility differs" in mismatch
+        assert mismatch is not None
+        calls = ray.get(counter.total.remote())
+        assert calls == 0, calls
+
         print(json.dumps({
             "simulated_logical_gpus": True, "simulated_device_identities": True,
             "performs_cuda_work": False,
@@ -76,6 +115,8 @@ def main():
             "every_planned_device_used_once": assigned == sorted(PLACEMENT.uuids),
             "ray_happened_to_match_each_rank": paired,
             "unsafe_device_order_refused": refused,
+            "cuda_nvml_disagreement_refused": mismatch is not None,
+            "mismatched_worker_bodies_run": calls,
         }, indent=2))
     finally:
         ray.shutdown()

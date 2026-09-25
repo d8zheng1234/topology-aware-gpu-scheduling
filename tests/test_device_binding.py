@@ -7,7 +7,7 @@ from topology_scheduler.device_binding import (
     DEVICE_ORDER_ENV_VAR, OBSERVE, PCI_BUS_ID, VERIFY, DeviceAssignment,
     DeviceBindingError, DevicePlacement, assignment_for, bind_worker,
     bundle_resources, check_assignments, device_resource_key, device_resources,
-    preflight_devices, resolve_device,
+    preflight_devices, resolve_device as resolve_observed_device,
 )
 
 PLAN = Plan((Node("a", "H100", 2, 80), Node("a", "H100", 2, 80)), 1.0)
@@ -21,6 +21,14 @@ def device(index, uuid):
 
 
 DEVICES = (device(0, "GPU-aaa"), device(1, "GPU-bbb"))
+
+
+def resolve_device(ids, devices, *, device_order):
+    """Existing cases simulate a CUDA observation agreeing with the fixture."""
+    cuda = {"available": True, "device_count": 1, "uuid": "GPU-aaa"}
+    if len(ids) == 1 and str(ids[0]).isdecimal() and int(ids[0]) < len(devices):
+        cuda["uuid"] = devices[int(ids[0])].uuid
+    return resolve_observed_device(ids, devices, device_order=device_order, cuda_device=cuda)
 
 
 def node(name, resources):
@@ -88,7 +96,7 @@ class ResolutionTests(unittest.TestCase):
 
     def test_a_non_index_accelerator_id_is_refused(self):
         self.assertIn("is not an index",
-                      resolve_device(["GPU-aaa"], DEVICES,
+                      resolve_device(["cuda:0"], DEVICES,
                                      device_order=PCI_BUS_ID)["problem"])
 
     def test_string_indices_from_ray_are_accepted(self):

@@ -87,16 +87,18 @@ published release. See [current status and validation](docs/current-status.md).
   and a verify mode that refuses a rank whose device is not the planned one
   before its workload runs. Records the requested and assigned identity, the
   index and PCI address they resolved through, and the observed
-  `CUDA_DEVICE_ORDER`
+  `CUDA_DEVICE_ORDER`. Production verification reads the actual CUDA-visible
+  UUID rather than trusting index order, retains missing/mismatched identity
+  evidence, and checks one-unit device advertisements and resource overrides
   ([PR #36](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/36));
   this is verification, not selection, because Ray still chooses the device.
 - An opt-in physical check for that binding, in which each worker asks the CUDA
   driver which device it would compute on and the result is compared with the
   resolved UUID
   ([PR #36](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/36)).
-  A recorded run on one GPU confirms the match and that a refused rank never
-  executes; multiple devices per node, Linux hosts, and numerical work on the
-  verified device remain unverified.
+  A historical single-GPU run confirmed the earlier verifier and context check;
+  it predates production CUDA UUID verification. Multiple devices per node,
+  Linux hosts, and numerical work on the verified device remain unverified.
 
 ### Changed
 
