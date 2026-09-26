@@ -11,6 +11,11 @@ published release. See [current status and validation](docs/current-status.md).
 
 ### Added
 
+- A concise V1.2 workflow covering discovery, planner inputs, node placement,
+  Ray reservation, execution, and cleanup, with explicit device-enforcement
+  and validation boundaries
+  ([PR #8](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/8)).
+
 - A reproducible single-GPU validation report and workflow covering physical
   NVML inventory, Ray GPU assignment, oversubscription rejection, baseline
   policies, backend contract suites, and a direct CUDA smoke test. Multi-GPU,
