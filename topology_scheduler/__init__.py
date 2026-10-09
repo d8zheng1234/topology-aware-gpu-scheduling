@@ -33,9 +33,16 @@ from .host_topology import (
     collect_host_topology, discover_host_topology, normalize_pci_address,
 )
 
+from .device_binding import (
+    DeviceAssignment, DeviceBindingError, DevicePlacement, device_resources,
+    run_with_devices,
+)
+
 __all__ = [
     "AFFINITY_ORDER", "RELATIONSHIP_TYPES", "RelationshipType", "TopologyGraph",
     "TopologyRelationship", "TopologyVertex",
+    "DeviceAssignment", "DeviceBindingError", "DevicePlacement",
+    "device_resources", "run_with_devices",
     "DynamoConfig", "DynamoService", "DynamoLifecycleError", "DynamoCleanupError",
     "ClusterNode", "ExecutionRecord", "GPUConnection", "GPUDevice", "KAIStatus",
     "KAIWorkload", "KubernetesKAIClient", "LinkCost", "LinkCostSource",
