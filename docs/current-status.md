@@ -25,8 +25,8 @@ inference benchmark or multi-GPU validation.
 | Dynamo V1 | Contract, environment recipe, and lifecycle adapter implemented; GPU-unverified | [Contract tests](../tests/test_dynamo_contract.py), [contract](dynamo-v1-contract.md); [lifecycle guide](dynamo-lifecycle.md), [CPU tests](../tests/test_dynamo_backend.py), and [simulated Ray smoke](../examples/dynamo_smoke.py); [GPU validation #3](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/3) remains outstanding. |
 | NIC inventory | Implemented; fixtures, mocked Ray tests, and same-host real-Ray/sysfs smoke | [NIC tests](../tests/test_nic_inventory.py), [discovery tests](../tests/test_nic_discovery.py), [Ray smoke](../examples/ray_nic_smoke.py), [example](../examples/nic_inventory.py), [guide](nic-inventory.md); advertised speed is not measured throughput, and no physical InfiniBand or multi-NIC host has been inventoried. |
 | GPU, NUMA, and NIC host locality | Implemented on top of the NIC inventory; fixtures, mocked Ray orchestration, and a real-sysfs check on a Linux host without GPUs | [Host topology tests](../tests/test_host_topology.py), [discovery tests](../tests/test_host_topology_discovery.py), [example](../examples/host_topology.py), [guide](host-topology.md); no physical multi-socket GPU host has been mapped, and proximity is structural, not measured. |
+| Typed GPU/NIC/NUMA topology graph | Implemented; synthetic graph, snapshot fixtures, and collector compatibility checks | [Graph API and boundaries](topology-graph.md), [graph tests](../tests/test_topology.py), [adapter tests](../tests/test_topology_observations.py); legacy GPU-only loading, current Reading/legacy scalar host NIC snapshots, typed evidence, and categorical affinity queries. NIC collection and pinned PR #29 compatibility were exercised with sysfs fixtures; no physical affinity validation or device binding. |
 | Inter-node TCP link measurement | Implemented; mocked unit tests, NIC collector fixtures, loopback socket tests, and a two-node Ray run on one host | [Link tests](../tests/test_links.py), [NIC integration tests](../tests/test_link_nic_evidence.py), [trace provenance tests](../tests/test_trace_link_provenance.py), [Ray link smoke](../examples/ray_link_smoke.py), [guide](link-measurement.md); matched traces retain fixed cost provenance for successes and failures. Opt-in only; no physical multi-node measurement is recorded, and TCP results are not RDMA or NCCL throughput. |
-| Typed affinity graph | Planned | [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16). Host locality supplies observations for the graph. |
 
 ## Versions
 
@@ -70,6 +70,7 @@ python -m examples.host_topology
 python -m examples.kai_manifest
 python -m examples.kai_submit --help
 python -m examples.nic_inventory
+python -m examples.topology_graph
 ```
 
 The list must match the allowlist in [the checker](../scripts/check_docs.py).
