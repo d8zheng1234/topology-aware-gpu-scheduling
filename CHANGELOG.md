@@ -31,8 +31,8 @@ published release. See [current status and validation](docs/current-status.md).
   example that also reads exported snapshots. Integration tests exercise the
   merged NIC collector with sysfs fixtures. Host snapshots accept current
   Reading-based NIC fields and earlier scalar fields, retain raw confidence,
-  and reject inconsistent reported/normalized PCI identities. Automatic affinity discovery and
-  backend device binding remain separate work
+  and reject inconsistent reported/normalized PCI identities. Host locality
+  supplies discovered affinity; physical device selection remains unimplemented
   ([PR #28](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/28)).
 - A persistent Ray-managed Dynamo replica adapter with atomic reservations,
   pinned TP=1 worker processes, readiness checks, Linux process-tree guardians,
@@ -187,8 +187,8 @@ published release. See [current status and validation](docs/current-status.md).
   speed unavailable.
 - Host locality reads NUMA and interface data from Linux sysfs only, and keeps
   unreadable or absent values as an explicit unknown. It observes proximity;
-  it does not bind a GPU to a NIC or feed placement scoring. A typed affinity
-  graph remains separate work.
+  it does not bind a GPU to a NIC or feed placement scoring. The typed topology
+  graph preserves these observations without turning them into measured costs.
 - Link measurement covers TCP over each node's Ray address. It is not RDMA,
   GPUDirect RDMA, or NCCL throughput, and the cost model does not use RTT.
   Matching probe addresses to interfaces is Linux primary-IPv4-only.

@@ -5,8 +5,7 @@ NVLink, PCI/NUMA ancestry, NUMA membership, and GPU-to-NIC affinity relationship
 It does not collapse those observations into one numeric distance or cost.
 
 The graph API, CPU example, and [NIC collector](nic-inventory.md) are implemented.
-GPU/NUMA/NIC derivation remains in [PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29)
-for [#15](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/15).
+GPU/NUMA/NIC derivation is provided by the [host-locality collector](host-topology.md).
 `from_observations()` adapts exported snapshots without changing the collectors.
 Graph tests run without optional dependencies or hardware; integration tests
 exercise the NIC collector using sysfs fixtures. No physical affinity validation
@@ -138,10 +137,10 @@ graph = TopologyGraph.from_observations(
 
 The GPU argument is one `RayNodeInventory` or its JSON dictionary. Optional
 snapshots use the public dictionary shapes from the merged [NIC collector](nic-inventory.md)
-and [locality PR #29](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/pull/29).
+and [host-locality collector](host-topology.md).
 The adapter only reads these records; it never starts Ray or discovers devices.
 NIC collection is available through `discover_nic_inventory()`; host locality
-collection remains in PR #29. Callers join collector records by `node_id`
+collection through `discover_host_topology()`. Callers join collector records by `node_id`
 before passing one node here.
 Collectors should retain these exported fields, or coordinate a schema update:
 
@@ -210,7 +209,8 @@ A separate local check used PR #29's actual collector at commit
 NUMA domains and tied NICs, unreadable NUMA, and missing PCI/virtual interfaces
 all converted through object and JSON inputs and round-tripped successfully.
 This is compatibility evidence for that pinned collector revision, not a new
-runtime dependency or hardware validation. The collector remains in PR #29.
+runtime dependency or hardware validation. The [combined integration tests](../tests/test_combined_integration.py) now
+exercise the collectors and graph in the same checkout with sysfs fixtures.
 
 From the repository root, run:
 

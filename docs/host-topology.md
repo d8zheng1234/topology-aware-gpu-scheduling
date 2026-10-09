@@ -151,9 +151,9 @@ cancellation of submitted tasks while preserving the original error.
   node. Those cases stay `unknown`; they are not approximated.
 - Advertised speed comes from the inventory and is what the driver reports the
   link negotiated, never application throughput.
-- These observations are not yet a typed graph;
-  [affinity graph #16](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/16)
-  is where placement policies would consume them.
+- The [typed topology graph](topology-graph.md) consumes these observations
+  through `TopologyGraph.from_observations()` and exposes categorical affinity
+  queries. This does not change placement scoring or enforce device selection.
 - No physical multi-socket GPU host has been mapped yet. The rules are covered
   by fixtures, Ray orchestration by mocked tests, and CI additionally runs the
   real reader against a Linux host that has interfaces but no GPU. Mocked Ray
