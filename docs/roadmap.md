@@ -115,7 +115,8 @@ the entire topology, Dynamo, and evaluation backlog need not be finished.
 An experimental release may include merged but GPU-unverified code if it is
 clearly labeled and the selected scope does not promise GPU validation. This
 does not close the corresponding research milestone or waive its exit criteria.
-Version selection, tags, and publication follow #20's release process separately.
+Version selection, tags, and publication follow the
+[release process](releasing.md) established by #20 separately.
 
 ## Issue assignment and ongoing triage
 
@@ -157,12 +158,12 @@ rewriting its evidence.
 Keep due dates unset until an owner estimate, hardware window, or agreed release
 date justifies a deadline. A maintainer may set a date after recording the owner,
 estimate or hardware reservation, resolved dependencies, and agreement in the
-relevant issue. Revisit the date when those
-assumptions change, with a linked explanation; never infer it from an issue
+relevant issue. Revisit the date when those assumptions change, with a linked
+explanation; never infer it from an issue
 number, design milestone, or package version.
 
 Repository metadata is separate from files in a PR. Initial milestone setup was
-tracked in [#18](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/18).
+completed under [#18](https://github.com/LawrenceL05/topology-aware-gpu-scheduling/issues/18).
 Merging a documentation update does not change milestones or issue assignments.
 For ongoing triage or recovery of missing metadata, a maintainer with the
 necessary upstream permissions follows these steps:
